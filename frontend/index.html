@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intramural Scheduler</title>
+<style>
+  :root {
+    --bg: #14171c;
+    --panel: #1b1f26;
+    --panel-alt: #20252d;
+    --border: #2c323c;
+    --text: #e6e8eb;
+    --muted: #8b93a1;
+    --accent: #e8a33d;
+    --accent-dim: #b57e2e;
+    --good: #4caf7d;
+    --bad: #e5484d;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    margin: 0;
+  }
+  header h1 span { color: var(--accent); }
+  #session-info { font-family: var(--mono); font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 12px; }
+  #session-info b { color: var(--text); }
+  button.link {
+    background: none; border: none; color: var(--accent); cursor: pointer;
+    font-family: var(--sans); font-size: 12px; padding: 0; text-decoration: underline;
+  }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    min-height: calc(100vh - 49px);
+  }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+
+  section.pane { background: var(--bg); padding: 24px; overflow-y: auto; }
+  h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 16px 0;
+    font-weight: 600;
+  }
+  h3 { font-size: 13px; color: var(--text); margin: 20px 0 10px 0; font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  td { padding: 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12.5px; }
+  tr:last-child td { border-bottom: none; }
+  .empty-row td { color: var(--muted); font-family: var(--sans); font-style: italic; }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 16px; margin-bottom: 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px 0; }
+  label:first-child { margin-top: 0; }
+  input, select, textarea {
+    width: 100%; background: var(--panel-alt); border: 1px solid var(--border);
+    color: var(--text); padding: 7px 9px; border-radius: 3px; font-family: var(--sans);
+    font-size: 13px;
+  }
+  textarea { font-family: var(--mono); font-size: 12px; min-height: 90px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-dim); outline-offset: -1px; border-color: var(--accent-dim); }
+
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+
+  button.primary {
+    margin-top: 14px; width: 100%; background: var(--accent); color: #1a1200;
+    border: none; padding: 9px; border-radius: 3px; font-weight: 700; font-size: 13px;
+    cursor: pointer; letter-spacing: 0.01em;
+  }
+  button.primary:hover { background: #f0ad4e; }
+  button.primary:active { transform: translateY(1px); }
+  button.secondary {
+    background: var(--panel-alt); color: var(--text); border: 1px solid var(--border);
+    padding: 5px 10px; border-radius: 3px; font-size: 12px; cursor: pointer;
+  }
+  button.secondary:hover { border-color: var(--accent-dim); }
+
+  .tabs { display: flex; gap: 2px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 14px; cursor: pointer; font-size: 12.5px; color: var(--muted);
+    border-bottom: 2px solid transparent; user-select: none;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .msg { padding: 8px 10px; border-radius: 3px; font-size: 12.5px; margin-top: 10px; font-family: var(--mono); }
+  .msg.good { background: rgba(76,175,125,0.12); color: var(--good); border: 1px solid rgba(76,175,125,0.3); }
+  .msg.bad { background: rgba(229,72,77,0.12); color: var(--bad); border: 1px solid rgba(229,72,77,0.3); }
+
+  .status-pill { font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .status-pill.CONFIRMED { background: rgba(76,175,125,0.15); color: var(--good); }
+  .status-pill.DRAFT { background: rgba(232,163,61,0.15); color: var(--accent); }
+  .status-pill.QUEUED, .status-pill.RUNNING { background: rgba(139,147,161,0.15); color: var(--muted); }
+  .status-pill.COMPLETED { background: rgba(76,175,125,0.15); color: var(--good); }
+  .status-pill.FAILED { background: rgba(229,72,77,0.15); color: var(--bad); }
+
+  #login-box { max-width: 320px; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>INTRAMURAL <span>SCHEDULER</span></h1>
+  <div id="session-info">
+    <span id="session-text">Not signed in</span>
+    <button class="link" id="logout-btn" style="display:none">sign out</button>
+  </div>
+</header>
+
+<main>
+  <!-- LEFT: public, read-only, always visible -->
+  <section class="pane">
+    <h2>Public Schedule &mdash; Confirmed Matches</h2>
+    <table>
+      <thead><tr><th>#</th><th>Sport</th><th>Teams</th><th>Venue</th><th>Start</th></tr></thead>
+      <tbody id="public-schedule-body">
+        <tr class="empty-row"><td colspan="5">Loading&hellip;</td></tr>
+      </tbody>
+    </table>
+    <p class="hint">Refreshes every 5s. No sign-in required &mdash; this is the same read-only endpoint any client renders as a calendar.</p>
+  </section>
+
+  <!-- RIGHT: login gate, then organizer tools -->
+  <section class="pane" id="right-pane">
+    <div id="login-box">
+      <h2>Organizer Sign In</h2>
+      <div class="card">
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" value="bball-rep@example.edu">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" value="rep-pass">
+        <button class="primary" onclick="login()">Sign in</button>
+        <div id="login-msg"></div>
+      </div>
+    </div>
+
+    <div id="organizer-box" style="display:none">
+      <div class="tabs">
+        <div class="tab active" data-tab="book">Book Match</div>
+        <div class="tab" data-tab="roster">Roster</div>
+        <div class="tab" data-tab="generate">Generate</div>
+        <div class="tab" data-tab="drafts">Drafts</div>
+      </div>
+
+      <div class="tab-panel active" id="tab-book">
+        <div class="card">
+          <div class="row">
+            <div><label>Home team ID</label><input id="b-home" type="number" value="1"></div>
+            <div><label>Away team ID</label><input id="b-away" type="number" value="2"></div>
+          </div>
+          <div class="row">
+            <div><label>Venue ID</label><input id="b-venue" type="number" value="1"></div>
+            <div><label>Sport</label><input id="b-sport" value="Basketball"></div>
+          </div>
+          <label>Start time (ISO)</label>
+          <input id="b-start" value="2026-10-01T18:00:00">
+          <label>End time (ISO)</label>
+          <input id="b-end" value="2026-10-01T19:00:00">
+          <label>Season ID</label>
+          <input id="b-season" type="number" value="1">
+          <button class="primary" onclick="bookMatch()">Propose match</button>
+          <div id="book-msg"></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-roster">
+        <div class="card">
+          <label>Player name</label>
+          <input id="p-name" value="Pashi">
+          <label>Roll number</label>
+          <input id="p-roll" value="R101">
+          <div class="row">
+            <div><label>Team ID</label><input id="p-team" type="number" value="1"></div>
+            <div><label>Sport</label><input id="p-sport" value="Basketball"></div>
+          </div>
+          <label>Season ID</label>
+          <input id="p-season" type="number" value="1">
+          <button class="primary" onclick="addPlayer()">Add to roster</button>
+          <div id="roster-msg"></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-generate">
+        <div class="card">
+          <div class="row">
+            <div><label>Sport</label><input id="g-sport" value="Basketball"></div>
+            <div><label>Season ID</label><input id="g-season" type="number" value="1"></div>
+          </div>
+          <label>Candidate fixtures (JSON array)</label>
+          <textarea id="g-fixtures">[
+  {"home_team_id": 1, "away_team_id": 2, "venue_id": 1,
+   "start_time": "2026-10-05T18:00:00", "end_time": "2026-10-05T19:00:00"}
+]</textarea>
+          <button class="primary" onclick="generateSchedule()">Generate (async)</button>
+          <div id="generate-msg"></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-drafts">
+        <h3>Drafts awaiting publish</h3>
+        <table>
+          <thead><tr><th>ID</th><th>Ver</th><th></th></tr></thead>
+          <tbody id="drafts-body">
+            <tr class="empty-row"><td colspan="3">No drafts yet &mdash; book a match or generate a schedule.</td></tr>
+          </tbody>
+        </table>
+        <div id="publish-msg"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const API_BASE = "http://localhost:8000";
+
+// In-memory only — deliberately not persisted to localStorage.
+let session = { token: null, role: null, sportScope: null };
+let drafts = []; // [{id, version}]
+
+function authHeaders() {
+  return session.token ? { "Authorization": "Bearer " + session.token } : {};
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(API_BASE + path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) },
+  });
+  const body = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, body };
+}
+
+function showMsg(elId, text, ok) {
+  document.getElementById(elId).innerHTML =
+    `<div class="msg ${ok ? "good" : "bad"}">${text}</div>`;
+}
+
+// ---------- Auth ----------
+async function login() {
+  const email = document.getElementById("login-email").value;
+  const password = document.getElementById("login-password").value;
+  const { ok, body } = await api("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+  if (!ok) { showMsg("login-msg", body.detail || "Login failed", false); return; }
+
+  session = { token: body.access_token, role: body.role, sportScope: body.sport_scope };
+  document.getElementById("login-box").style.display = "none";
+  document.getElementById("organizer-box").style.display = "block";
+  document.getElementById("logout-btn").style.display = "inline";
+  document.getElementById("session-text").innerHTML =
+    `<b>${session.role}</b>${session.sportScope ? " &middot; " + session.sportScope : " &middot; global scope"}`;
+}
+
+function logout() {
+  session = { token: null, role: null, sportScope: null };
+  drafts = [];
+  renderDrafts();
+  document.getElementById("login-box").style.display = "block";
+  document.getElementById("organizer-box").style.display = "none";
+  document.getElementById("logout-btn").style.display = "none";
+  document.getElementById("session-text").textContent = "Not signed in";
+}
+document.getElementById("logout-btn").onclick = logout;
+
+// ---------- Tabs ----------
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+  };
+});
+
+// ---------- Public schedule (no auth) ----------
+async function loadPublicSchedule() {
+  const { ok, body } = await api("/schedules?season=active");
+  const tbody = document.getElementById("public-schedule-body");
+  if (!ok || !body.length) {
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="5">No confirmed matches yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = body.map(m => `
+    <tr>
+      <td>${m.id}</td>
+      <td>${m.sport}</td>
+      <td>Team ${m.home_team_id} vs Team ${m.away_team_id}</td>
+      <td>Venue ${m.venue_id}</td>
+      <td>${m.start_time}</td>
+    </tr>`).join("");
+}
+loadPublicSchedule();
+setInterval(loadPublicSchedule, 5000);
+
+// ---------- Book a match ----------
+async function bookMatch() {
+  const payload = {
+    home_team_id: Number(document.getElementById("b-home").value),
+    away_team_id: Number(document.getElementById("b-away").value),
+    venue_id: Number(document.getElementById("b-venue").value),
+    sport: document.getElementById("b-sport").value,
+    start_time: document.getElementById("b-start").value,
+    end_time: document.getElementById("b-end").value,
+    season_id: Number(document.getElementById("b-season").value),
+  };
+  const { ok, status, body } = await api("/schedules", { method: "POST", body: JSON.stringify(payload) });
+  if (!ok) {
+    const detail = typeof body.detail === "object" ? JSON.stringify(body.detail.conflicts) : body.detail;
+    showMsg("book-msg", `${status}: ${detail}`, false);
+    return;
+  }
+  showMsg("book-msg", `Draft created: match #${body.match_id} (version ${body.version})`, true);
+  drafts.push({ id: body.match_id, version: body.version });
+  renderDrafts();
+}
+
+// ---------- Roster ----------
+async function addPlayer() {
+  const payload = {
+    name: document.getElementById("p-name").value,
+    roll_number: document.getElementById("p-roll").value,
+    team_id: Number(document.getElementById("p-team").value),
+    sport: document.getElementById("p-sport").value,
+    season_id: Number(document.getElementById("p-season").value),
+  };
+  const { ok, status, body } = await api("/players", { method: "POST", body: JSON.stringify(payload) });
+  showMsg("roster-msg", ok ? `Added: player #${body.player_id} → team #${body.team_id}` : `${status}: ${body.detail}`, ok);
+}
+
+// ---------- Async generation ----------
+async function generateSchedule() {
+  let fixtures;
+  try { fixtures = JSON.parse(document.getElementById("g-fixtures").value); }
+  catch (e) { showMsg("generate-msg", "Invalid JSON in fixtures", false); return; }
+
+  const payload = {
+    sport: document.getElementById("g-sport").value,
+    season_id: Number(document.getElementById("g-season").value),
+    fixtures,
+  };
+  const { ok, status, body } = await api("/schedule-generations", { method: "POST", body: JSON.stringify(payload) });
+  if (!ok) { showMsg("generate-msg", `${status}: ${body.detail}`, false); return; }
+
+  showMsg("generate-msg", `Job #${body.job_id} queued — polling…`, true);
+  pollJob(body.job_id);
+}
+
+async function pollJob(jobId) {
+  const { body } = await api(`/schedule-generations/${jobId}`);
+  showMsg("generate-msg",
+    `<span class="status-pill ${body.status}">${body.status}</span> job #${jobId}`, true);
+
+  if (body.status === "QUEUED" || body.status === "RUNNING") {
+    setTimeout(() => pollJob(jobId), 700);
+    return;
+  }
+  if (body.status === "COMPLETED") {
+    const created = body.result.created_draft_match_ids || [];
+    created.forEach(id => drafts.push({ id, version: 1 }));
+    renderDrafts();
+    showMsg("generate-msg",
+      `Done — ${created.length} draft(s) created, ${body.result.skipped.length} skipped (conflicts). See Drafts tab.`, true);
+  } else {
+    showMsg("generate-msg", `Job failed: ${JSON.stringify(body.result)}`, false);
+  }
+}
+
+// ---------- Drafts / publish ----------
+function renderDrafts() {
+  const tbody = document.getElementById("drafts-body");
+  if (!drafts.length) {
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="3">No drafts yet — book a match or generate a schedule.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = drafts.map((d, i) => `
+    <tr>
+      <td>#${d.id}</td>
+      <td>v${d.version}</td>
+      <td><button class="secondary" onclick="publishDraft(${i})">Publish</button></td>
+    </tr>`).join("");
+}
+
+async function publishDraft(index) {
+  const d = drafts[index];
+  const { ok, status, body } = await api(`/schedules/${d.id}/publish`, {
+    method: "POST", body: JSON.stringify({ expected_version: d.version }),
+  });
+  if (!ok) {
+    const detail = typeof body.detail === "object" ? JSON.stringify(body.detail.conflicts) : body.detail;
+    showMsg("publish-msg", `#${d.id} → ${status}: ${detail}`, false);
+    return;
+  }
+  showMsg("publish-msg", `#${d.id} published (now v${body.version})`, true);
+  drafts.splice(index, 1);
+  renderDrafts();
+  loadPublicSchedule();
+}
+
+renderDrafts();
+</script>
+</body>
+</html>
