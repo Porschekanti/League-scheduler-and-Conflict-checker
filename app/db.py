@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     payload TEXT NOT NULL,
     result TEXT
 );
+
+-- The conflict engine runs these three lookups on every single proposed
+-- match, so they are the only queries whose shape is worth indexing for.
+CREATE INDEX IF NOT EXISTS idx_matches_venue ON matches(venue_id, status);
+CREATE INDEX IF NOT EXISTS idx_matches_home_team ON matches(home_team_id);
+CREATE INDEX IF NOT EXISTS idx_matches_away_team ON matches(away_team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_player ON team_members(player_id);
 """
 
 

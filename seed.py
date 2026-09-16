@@ -35,9 +35,10 @@ conn.execute("INSERT INTO venues (name, location, capacity) VALUES (?, ?, ?)",
 conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Basketball', 1)", ("Goon Squad",))
 conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Basketball', 1)", ("Rebels",))
 conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Cricket', 2)", ("Strikers",))
+conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Cricket', 2)", ("Chargers",))
 
 conn.commit()
 conn.close()
 print("Seeded: head@example.edu / head-pass, bball-rep@example.edu / rep-pass, cricket-rep@example.edu / rep-pass")
-print("Teams: 1=Goon Squad (Basketball), 2=Rebels (Basketball), 3=Strikers (Cricket)")
+print("Teams: 1=Goon Squad (Basketball), 2=Rebels (Basketball), 3=Strikers (Cricket), 4=Chargers (Cricket)")
 print("Venues: 1=Main Court, 2=Cricket Ground | Seasons: 1=Basketball 2026, 2=Cricket 2026")

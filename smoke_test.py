@@ -61,7 +61,7 @@ assert r.json()["detail"]["conflicts"][0]["type"] == "venue"
 
 print("\n=== 8. Cricket rep tries to book Pashi (on Basketball roster, overlapping time), diff venue -> expect 409 PLAYER conflict ===")
 r = client.post("/schedules", headers={"Authorization": f"Bearer {cricket_token}"},
-                 json={"home_team_id": 3, "away_team_id": 3, "venue_id": 2,
+                 json={"home_team_id": 3, "away_team_id": 4, "venue_id": 2,
                        "start_time": "2026-10-01T18:15:00", "end_time": "2026-10-01T20:00:00",
                        "sport": "Cricket", "season_id": 2})
 print(r.status_code, r.json())

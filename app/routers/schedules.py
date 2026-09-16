@@ -3,7 +3,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from app.conflicts import validate_match
+from app.conflicts import MatchValidationError, normalize_instant, validate_match
 from app.deps import get_db, require_role, require_sport_scope
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
@@ -28,35 +28,57 @@ def create_draft(
     """Booking Service's direct path: propose one specific match."""
     require_sport_scope(user, body.sport)
 
-    conflicts = validate_match(
-        conn,
-        body.home_team_id,
-        body.away_team_id,
-        body.venue_id,
-        body.start_time,
-        body.end_time,
-    )
-    if conflicts:
-        raise HTTPException(status.HTTP_409_CONFLICT, {"conflicts": conflicts})
+    try:
+        start_time = normalize_instant(body.start_time, "start_time")
+        end_time = normalize_instant(body.end_time, "end_time")
 
-    cur = conn.execute(
-        """
-        INSERT INTO matches
-            (home_team_id, away_team_id, venue_id, start_time, end_time,
-             status, sport, season_id, version)
-        VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, ?, 1)
-        """,
-        (
+        # Checking and then inserting is only safe inside one transaction.
+        # Handlers are sync `def`, so FastAPI runs them in a threadpool and
+        # concurrent bookings really do interleave — without BEGIN IMMEDIATE
+        # two requests both see a free slot and both insert into it.
+        conn.execute("BEGIN IMMEDIATE")
+
+        conflicts = validate_match(
+            conn,
             body.home_team_id,
             body.away_team_id,
             body.venue_id,
-            body.start_time,
-            body.end_time,
-            body.sport,
-            body.season_id,
-        ),
-    )
-    conn.commit()
+            start_time,
+            end_time,
+            sport=body.sport,
+            season_id=body.season_id,
+        )
+        if conflicts:
+            conn.rollback()
+            raise HTTPException(status.HTTP_409_CONFLICT, {"conflicts": conflicts})
+
+        cur = conn.execute(
+            """
+            INSERT INTO matches
+                (home_team_id, away_team_id, venue_id, start_time, end_time,
+                 status, sport, season_id, version)
+            VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, ?, 1)
+            """,
+            (
+                body.home_team_id,
+                body.away_team_id,
+                body.venue_id,
+                start_time,
+                end_time,
+                body.sport,
+                body.season_id,
+            ),
+        )
+        conn.commit()
+    except MatchValidationError as exc:
+        conn.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+
     return {"match_id": cur.lastrowid, "status": "DRAFT", "version": 1}
 
 
@@ -74,15 +96,21 @@ def validate_draft(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Draft not found")
     require_sport_scope(user, match["sport"])
 
-    conflicts = validate_match(
-        conn,
-        match["home_team_id"],
-        match["away_team_id"],
-        match["venue_id"],
-        match["start_time"],
-        match["end_time"],
-        exclude_match_id=draft_id,
-    )
+    try:
+        conflicts = validate_match(
+            conn,
+            match["home_team_id"],
+            match["away_team_id"],
+            match["venue_id"],
+            match["start_time"],
+            match["end_time"],
+            exclude_match_id=draft_id,
+        )
+    except MatchValidationError as exc:
+        # A stored row we cannot even parse is never "valid" — reporting it
+        # as conflict-free would hide it from the organizer entirely.
+        return {"valid": False, "conflicts": [{"type": "invalid", "reason": str(exc)}]}
+
     if conflicts:
         return {"valid": False, "conflicts": conflicts}
     return {"valid": True, "conflicts": []}
@@ -104,46 +132,66 @@ def publish_draft(
     caught by the version check and rejected with 409, not silently
     overwritten."""
     conn.execute("BEGIN IMMEDIATE")
-    match = conn.execute("SELECT * FROM matches WHERE id = ?", (draft_id,)).fetchone()
-    if match is None:
-        conn.rollback()
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Draft not found")
-    require_sport_scope(user, match["sport"])
+    try:
+        match = conn.execute(
+            "SELECT * FROM matches WHERE id = ?", (draft_id,)
+        ).fetchone()
+        if match is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Draft not found")
+        require_sport_scope(user, match["sport"])
 
-    if match["status"] != "DRAFT":
-        conn.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "Match is not in DRAFT status")
+        if match["status"] != "DRAFT":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Match is not in DRAFT status"
+            )
 
-    if match["version"] != body.expected_version:
-        conn.rollback()
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"Version mismatch — someone else already changed this draft "
-            f"(expected {body.expected_version}, current {match['version']})",
+        if match["version"] != body.expected_version:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Version mismatch — someone else already changed this draft "
+                f"(expected {body.expected_version}, current {match['version']})",
+            )
+
+        try:
+            conflicts = validate_match(
+                conn,
+                match["home_team_id"],
+                match["away_team_id"],
+                match["venue_id"],
+                match["start_time"],
+                match["end_time"],
+                exclude_match_id=draft_id,
+            )
+        except MatchValidationError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Draft cannot be published: {exc}",
+            )
+
+        if conflicts:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, {"conflicts": conflicts}
+            )
+
+        conn.execute(
+            """
+            UPDATE matches SET status = 'CONFIRMED', version = version + 1
+            WHERE id = ? AND version = ?
+            """,
+            (draft_id, body.expected_version),
         )
-
-    conflicts = validate_match(
-        conn,
-        match["home_team_id"],
-        match["away_team_id"],
-        match["venue_id"],
-        match["start_time"],
-        match["end_time"],
-        exclude_match_id=draft_id,
-    )
-    if conflicts:
+        conn.commit()
+    except Exception:
+        # Every early exit above leaves BEGIN IMMEDIATE's write lock held
+        # otherwise, which blocks other writers until the connection closes.
         conn.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, {"conflicts": conflicts})
+        raise
 
-    conn.execute(
-        """
-        UPDATE matches SET status = 'CONFIRMED', version = version + 1
-        WHERE id = ? AND version = ?
-        """,
-        (draft_id, body.expected_version),
-    )
-    conn.commit()
-    return {"match_id": draft_id, "status": "CONFIRMED", "version": body.expected_version + 1}
+    return {
+        "match_id": draft_id,
+        "status": "CONFIRMED",
+        "version": body.expected_version + 1,
+    }
 
 
 @router.get("")

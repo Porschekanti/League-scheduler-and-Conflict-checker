@@ -1,0 +1,9 @@
+# Local SQLite database — recreate with: python seed.py
+scheduler.db
+scheduler.db-wal
+scheduler.db-shm
+
+.venv/
+venv/
+__pycache__/
+*.pyc
