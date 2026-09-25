@@ -12,6 +12,24 @@ print("=== 1. Login as Basketball Rep ===")
 bball_token = login("bball-rep@example.edu", "rep-pass")
 print("OK, got token")
 
+print("\n=== 1b. Create team, add/remove roster player ===")
+r = client.post("/teams", headers={"Authorization": f"Bearer {bball_token}"},
+                json={"name": "Smoke Team", "sport": "Basketball", "season_id": 1})
+print(r.status_code, r.json())
+assert r.status_code == 201
+smoke_team_id = r.json()["team_id"]
+r = client.post("/players", headers={"Authorization": f"Bearer {bball_token}"},
+                json={"name": "Roster Smoke", "roll_number": "R-SMOKE", "team_id": smoke_team_id,
+                      "sport": "Basketball", "season_id": 1})
+assert r.status_code == 201
+smoke_player_id = r.json()["player_id"]
+r = client.get(f"/teams/{smoke_team_id}/roster")
+assert r.status_code == 200 and any(p["id"] == smoke_player_id for p in r.json())
+r = client.delete(f"/players/{smoke_player_id}/teams/{smoke_team_id}",
+                  headers={"Authorization": f"Bearer {bball_token}"})
+assert r.status_code == 200
+assert not client.get(f"/teams/{smoke_team_id}/roster").json()
+
 print("\n=== 2. Scope check: Basketball rep touches Cricket -> expect 403 ===")
 r = client.post("/players", headers={"Authorization": f"Bearer {bball_token}"},
                  json={"name": "Test", "roll_number": "R100", "team_id": 3,
@@ -100,9 +118,13 @@ r = client.post("/schedule-generations", headers={"Authorization": f"Bearer {bba
 print(r.status_code, r.json())
 job_id = r.json()["job_id"]
 
+print("\n=== 13. Job status requires authentication ===")
+r = client.get(f"/schedule-generations/{job_id}")
+assert r.status_code == 401
+
 import time
 for _ in range(10):
-    r = client.get(f"/schedule-generations/{job_id}")
+    r = client.get(f"/schedule-generations/{job_id}", headers={"Authorization": f"Bearer {bball_token}"})
     status = r.json()["status"]
     print("  poll:", status)
     if status in ("COMPLETED", "FAILED"):
@@ -112,5 +134,31 @@ print(r.json())
 assert r.json()["status"] == "COMPLETED"
 assert len(r.json()["result"]["created_draft_match_ids"]) == 1
 assert len(r.json()["result"]["skipped"]) == 1
+
+print("\n=== 14. Cancelled booking immediately frees venue/team slot ===")
+r = client.post("/schedules", headers={"Authorization": f"Bearer {bball_token}"}, json={
+    "home_team_id": 1, "away_team_id": 2, "venue_id": 1,
+    "start_time": "2026-10-10T18:00:00", "end_time": "2026-10-10T19:00:00",
+    "sport": "Basketball", "season_id": 1})
+assert r.status_code == 201
+cancel_match = r.json()
+r = client.post(f"/schedules/{cancel_match['match_id']}/cancel",
+                headers={"Authorization": f"Bearer {bball_token}"},
+                json={"expected_version": cancel_match["version"]})
+assert r.status_code == 200 and r.json()["status"] == "CANCELLED"
+r = client.post("/schedules", headers={"Authorization": f"Bearer {bball_token}"}, json={
+    "home_team_id": 1, "away_team_id": 2, "venue_id": 1,
+    "start_time": "2026-10-10T18:00:00", "end_time": "2026-10-10T19:00:00",
+    "sport": "Basketball", "season_id": 1})
+assert r.status_code == 201, r.text
+confirmed_again = r.json()
+r = client.post(f"/schedules/{confirmed_again['match_id']}/publish",
+                headers={"Authorization": f"Bearer {bball_token}"},
+                json={"expected_version": confirmed_again["version"]})
+assert r.status_code == 200
+r = client.post(f"/schedules/{confirmed_again['match_id']}/cancel",
+                headers={"Authorization": f"Bearer {bball_token}"},
+                json={"expected_version": r.json()["version"]})
+assert r.status_code == 200 and r.json()["status"] == "CANCELLED"
 
 print("\n\n=== ALL CHECKS PASSED ===")

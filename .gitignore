@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+scheduler.db
+scheduler.db-wal
+scheduler.db-shm
+.env

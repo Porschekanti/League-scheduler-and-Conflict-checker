@@ -23,7 +23,12 @@ def add_player(
     conn: sqlite3.Connection = Depends(get_db),
     user: sqlite3.Row = Depends(require_role("HEAD", "REP")),
 ):
-    require_sport_scope(user, body.sport)
+    team = conn.execute("SELECT sport, season_id FROM teams WHERE id = ?", (body.team_id,)).fetchone()
+    if team is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Team not found")
+    if body.sport != team["sport"] or body.season_id != team["season_id"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "sport and season_id must match the selected team")
+    require_sport_scope(user, team["sport"])
 
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -67,3 +72,15 @@ def add_player(
         )
 
     return {"player_id": player_id, "team_id": body.team_id}
+
+@router.delete("/{player_id}/teams/{team_id}")
+def remove_player_from_team(player_id: int, team_id: int, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD", "REP"))):
+    team = conn.execute("SELECT sport, season_id FROM teams WHERE id = ?", (team_id,)).fetchone()
+    if team is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Team membership not found")
+    require_sport_scope(user, team["sport"])
+    cur = conn.execute("DELETE FROM team_members WHERE player_id = ? AND team_id = ? AND sport = ? AND season_id = ?", (player_id, team_id, team["sport"], team["season_id"]))
+    if cur.rowcount == 0:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Team membership not found")
+    conn.commit()
+    return {"removed": True, "player_id": player_id, "team_id": team_id}

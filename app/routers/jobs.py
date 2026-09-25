@@ -3,7 +3,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, HTTPException
 from pydantic import BaseModel
 
 from app.deps import get_db, require_role, require_sport_scope
@@ -50,9 +50,10 @@ def create_generation_job(
 
 
 @router.get("/{job_id}")
-def get_job_status(job_id: int, conn: sqlite3.Connection = Depends(get_db)):
+def get_job_status(job_id: int, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD", "REP"))):
     row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     if row is None:
-        return {"error": "job not found"}
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    require_sport_scope(user, json.loads(row["payload"])["sport"])
     result = json.loads(row["result"]) if row["result"] else None
     return {"job_id": job_id, "status": row["status"], "result": result}

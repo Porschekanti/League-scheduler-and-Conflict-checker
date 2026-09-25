@@ -91,6 +91,9 @@ def validate_draft(
 class PublishRequest(BaseModel):
     expected_version: int
 
+class CancelRequest(BaseModel):
+    expected_version: int
+
 
 @router.post("/{draft_id}/publish")
 def publish_draft(
@@ -144,6 +147,24 @@ def publish_draft(
     )
     conn.commit()
     return {"match_id": draft_id, "status": "CONFIRMED", "version": body.expected_version + 1}
+
+@router.post("/{match_id}/cancel")
+def cancel_match(match_id: int, body: CancelRequest, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD", "REP"))):
+    conn.execute("BEGIN IMMEDIATE")
+    match = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    if match is None:
+        conn.rollback()
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Match not found")
+    require_sport_scope(user, match["sport"])
+    if match["status"] == "CANCELLED":
+        conn.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "Match is already CANCELLED")
+    if match["version"] != body.expected_version:
+        conn.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Version mismatch — expected {body.expected_version}, current {match['version']}")
+    conn.execute("UPDATE matches SET status = 'CANCELLED', version = version + 1 WHERE id = ? AND version = ?", (match_id, body.expected_version))
+    conn.commit()
+    return {"match_id": match_id, "status": "CANCELLED", "version": body.expected_version + 1}
 
 
 @router.get("")
