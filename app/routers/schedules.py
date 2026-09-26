@@ -184,3 +184,5 @@ def list_schedules(season: str = "active", conn: sqlite3.Connection = Depends(ge
             "SELECT * FROM matches WHERE status = 'CONFIRMED' ORDER BY start_time"
         ).fetchall()
     return [dict(r) for r in rows]
+
+

@@ -1,7 +1,7 @@
 venv/
 __pycache__/
-*.pyc
-scheduler.db
-scheduler.db-wal
-scheduler.db-shm
+*.py[cod]
+*.sqlite
+*.db
+.pytest_cache/
 .env

@@ -57,3 +57,5 @@ def get_job_status(job_id: int, conn: sqlite3.Connection = Depends(get_db), user
     require_sport_scope(user, json.loads(row["payload"])["sport"])
     result = json.loads(row["result"]) if row["result"] else None
     return {"job_id": job_id, "status": row["status"], "result": result}
+
+

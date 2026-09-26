@@ -18,6 +18,22 @@ conn.execute(
     ("Cricket Rep", "cricket-rep@example.edu", hash_password("rep-pass"), "REP", "Cricket"),
 )
 
+# One-time bootstrap exception: the first seeded HEAD starts with an accepted
+# ledger row because nobody exists yet to nominate them.
+head_id = conn.execute("SELECT id FROM users WHERE email = ?", ("head@example.edu",)).fetchone()[0]
+term_cur = conn.execute(
+    "INSERT INTO academic_terms (label, start_date, end_date, is_current) VALUES (?, ?, ?, 1)",
+    ("2026-27", "2026-07-01", "2027-06-30"),
+)
+conn.execute(
+    """INSERT INTO role_assignments
+       (role, sport_scope, term_id, nominated_user_id, nominated_by_user_id,
+        status, created_at, accepted_at)
+       VALUES ('HEAD', NULL, ?, ?, ?, 'ACCEPTED', datetime('now'), datetime('now'))""",
+    (term_cur.lastrowid, head_id, head_id),
+)
+conn.execute("UPDATE users SET role = 'HEAD', sport_scope = NULL WHERE id = ?", (head_id,))
+
 conn.execute(
     "INSERT INTO seasons (sport, start_date, end_date, is_active) VALUES (?, ?, ?, 1)",
     ("Basketball", "2026-01-01", "2026-12-31"),

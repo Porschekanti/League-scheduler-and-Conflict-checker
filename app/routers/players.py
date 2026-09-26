@@ -84,3 +84,5 @@ def remove_player_from_team(player_id: int, team_id: int, conn: sqlite3.Connecti
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Team membership not found")
     conn.commit()
     return {"removed": True, "player_id": player_id, "team_id": team_id}
+
+

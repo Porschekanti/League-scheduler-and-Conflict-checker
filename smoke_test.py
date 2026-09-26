@@ -10,6 +10,7 @@ def login(email, password):
 
 print("=== 1. Login as Basketball Rep ===")
 bball_token = login("bball-rep@example.edu", "rep-pass")
+head_token = login("head@example.edu", "head-pass")
 print("OK, got token")
 
 print("\n=== 1b. Create team, add/remove roster player ===")
@@ -146,11 +147,13 @@ r = client.post(f"/schedules/{cancel_match['match_id']}/cancel",
                 headers={"Authorization": f"Bearer {bball_token}"},
                 json={"expected_version": cancel_match["version"]})
 assert r.status_code == 200 and r.json()["status"] == "CANCELLED"
+
+confirmed_again = None
 r = client.post("/schedules", headers={"Authorization": f"Bearer {bball_token}"}, json={
     "home_team_id": 1, "away_team_id": 2, "venue_id": 1,
     "start_time": "2026-10-10T18:00:00", "end_time": "2026-10-10T19:00:00",
     "sport": "Basketball", "season_id": 1})
-assert r.status_code == 201, r.text
+assert r.status_code == 201
 confirmed_again = r.json()
 r = client.post(f"/schedules/{confirmed_again['match_id']}/publish",
                 headers={"Authorization": f"Bearer {bball_token}"},
@@ -161,4 +164,35 @@ r = client.post(f"/schedules/{confirmed_again['match_id']}/cancel",
                 json={"expected_version": r.json()["version"]})
 assert r.status_code == 200 and r.json()["status"] == "CANCELLED"
 
+print("\n=== 15. Role nomination, acceptance, revocation, and pending privacy ===")
+r = client.post("/role-assignments/nominate", headers={"Authorization": f"Bearer {head_token}"},
+                json={"role": "HEAD", "term_id": 1, "nominee_user_id": 2})
+assert r.status_code == 201, r.text
+assignment_id = r.json()["id"]
+r = client.get("/role-assignments/pending-for-me", headers={"Authorization": f"Bearer {bball_token}"})
+assert r.status_code == 200 and any(a["id"] == assignment_id for a in r.json())
+r = client.post(f"/role-assignments/{assignment_id}/accept", headers={"Authorization": f"Bearer {bball_token}"})
+assert r.status_code == 200 and r.json()["role"] == "HEAD"
+r = client.get("/auth/me", headers={"Authorization": f"Bearer {bball_token}"})
+assert r.status_code == 200 and r.json()["role"] == "HEAD"
+# The former Basketball Rep can now pass a global role-gated action.
+r = client.post("/teams", headers={"Authorization": f"Bearer {bball_token}"},
+                json={"name": "Head-created Team", "sport": "Cricket", "season_id": 2})
+assert r.status_code == 201
+r = client.post(f"/role-assignments/{assignment_id}/revoke", headers={"Authorization": f"Bearer {bball_token}"})
+assert r.status_code == 200
+r = client.get("/auth/me", headers={"Authorization": f"Bearer {bball_token}"})
+assert r.status_code == 200 and r.json()["role"] == "VIEWER"
+# A Rep cannot nominate, even for their own sport.
+r = client.post("/role-assignments/nominate", headers={"Authorization": f"Bearer {cricket_token}"},
+                json={"role": "REP", "sport_scope": "Cricket", "term_id": 1, "nominee_user_id": 2})
+assert r.status_code == 403
+# Create a pending Cricket nomination and verify it is visible only to its nominee.
+r = client.post("/role-assignments/nominate", headers={"Authorization": f"Bearer {head_token}"},
+                json={"role": "REP", "sport_scope": "Cricket", "term_id": 1, "nominee_user_id": 3})
+assert r.status_code == 201
+r = client.get("/role-assignments/pending-for-me", headers={"Authorization": f"Bearer {bball_token}"})
+assert r.status_code == 200 and not any(a["nominated_user_id"] == 3 for a in r.json())
+r = client.get("/role-assignments/pending-for-me", headers={"Authorization": f"Bearer {cricket_token}"})
+assert r.status_code == 200 and any(a["nominated_user_id"] == 3 for a in r.json())
 print("\n\n=== ALL CHECKS PASSED ===")
