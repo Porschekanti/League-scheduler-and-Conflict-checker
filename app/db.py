@@ -13,6 +13,26 @@ CREATE TABLE IF NOT EXISTS users (
     sport_scope TEXT
 );
 
+CREATE TABLE IF NOT EXISTS academic_terms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL UNIQUE,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    is_current INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS role_assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL CHECK(role IN ('HEAD','REP')),
+    sport_scope TEXT,
+    term_id INTEGER NOT NULL REFERENCES academic_terms(id),
+    nominated_user_id INTEGER NOT NULL REFERENCES users(id),
+    nominated_by_user_id INTEGER NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL CHECK(status IN ('PENDING','ACCEPTED','REVOKED')) DEFAULT 'PENDING',
+    created_at TEXT NOT NULL,
+    accepted_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS seasons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sport TEXT NOT NULL,
@@ -56,6 +76,14 @@ CREATE TABLE IF NOT EXISTS venues (
     capacity INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL CHECK(status IN ('QUEUED','RUNNING','COMPLETED','FAILED')) DEFAULT 'QUEUED',
+    created_at TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    result TEXT
+);
+
 CREATE TABLE IF NOT EXISTS matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     home_team_id INTEGER NOT NULL REFERENCES teams(id),
@@ -70,13 +98,6 @@ CREATE TABLE IF NOT EXISTS matches (
     job_id INTEGER REFERENCES jobs(id)
 );
 
-CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    status TEXT NOT NULL CHECK(status IN ('QUEUED','RUNNING','COMPLETED','FAILED')) DEFAULT 'QUEUED',
-    created_at TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    result TEXT
-);
 """
 
 

@@ -3,7 +3,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from app.deps import get_db
+from app.deps import get_db, get_current_user
 from app.security import create_access_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -34,3 +34,8 @@ def login(body: LoginRequest, conn: sqlite3.Connection = Depends(get_db)):
     return LoginResponse(
         access_token=token, role=user["role"], sport_scope=user["sport_scope"]
     )
+
+
+@router.get("/me")
+def me(user: sqlite3.Row = Depends(get_current_user)):
+    return {"id": user["id"], "name": user["name"], "email": user["email"], "role": user["role"], "sport_scope": user["sport_scope"]}
