@@ -1,26 +1,36 @@
 import sqlite3
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from app.deps import get_db, require_role, require_sport_scope
+from app.trimesters import resolve_season
 
 router = APIRouter(tags=["reference"])
 
 class CreateTeamRequest(BaseModel):
     name: str
     sport: str
-    season_id: int
+    # season_id is optional and, when given, still has to agree with the sport.
+    # Left out, the team joins the trimester we are currently in — which is
+    # what registering a team means in practice.
+    season_id: int | None = None
 
 @router.post("/teams", status_code=status.HTTP_201_CREATED)
 def create_team(body: CreateTeamRequest, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD", "REP"))):
     require_sport_scope(user, body.sport)
-    season = conn.execute("SELECT sport FROM seasons WHERE id = ?", (body.season_id,)).fetchone()
-    if season is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Season not found")
-    if season["sport"] != body.sport:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "sport must match the season")
-    cur = conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, ?, ?)", (body.name, body.sport, body.season_id))
+    if body.season_id is None:
+        season_id = resolve_season(conn, body.sport, date.today())
+    else:
+        season = conn.execute("SELECT sport FROM seasons WHERE id = ?", (body.season_id,)).fetchone()
+        if season is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Season not found")
+        if season["sport"] != body.sport:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "sport must match the season")
+        season_id = body.season_id
+    cur = conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, ?, ?)", (body.name, body.sport, season_id))
     conn.commit()
-    return {"team_id": cur.lastrowid}
+    return {"team_id": cur.lastrowid, "season_id": season_id}
 
 @router.get("/teams")
 def list_teams(sport: str | None = Query(default=None), season_id: int | None = Query(default=None), conn: sqlite3.Connection = Depends(get_db)):

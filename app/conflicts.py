@@ -1,10 +1,11 @@
 """
-The two independent checks the whole system exists to run, before any
-match is confirmed:
+The checks the whole system exists to run, before any match is confirmed:
 
 1. Venue conflict  — does this venue/time overlap an existing booking?
 2. Player conflict — is any player on either team already committed to
    an overlapping match, in ANY sport/season (not just this one)?
+3. Blackout (rest) — even with no overlap at all, is any of those players
+   being asked to play again too soon after finishing another match?
 
 Both checks query live data at call time — there is no cached or stale
 copy of "the schedule" anywhere. That is the actual fix for the
@@ -36,6 +37,13 @@ from datetime import datetime, timedelta, timezone
 # SCHEDULER_UTC_OFFSET_MINUTES for a campus running on local wall-clock time
 # (e.g. 330 for IST).
 _NAIVE_OFFSET = timezone(timedelta(minutes=int(os.environ.get("SCHEDULER_UTC_OFFSET_MINUTES", "0"))))
+
+# Minimum rest between two matches for the same player, measured from the end
+# of one to the start of the next. A match finishing at 20:30 frees that player
+# at 22:00. This is a welfare rule, not a resource rule: it is about the same
+# body being asked to play twice, so like the player conflict check it applies
+# across every sport and season, and a venue change does not excuse it.
+BLACKOUT_MINUTES = int(os.environ.get("SCHEDULER_BLACKOUT_MINUTES", "90"))
 
 
 class MatchValidationError(ValueError):
@@ -127,6 +135,26 @@ def check_venue_conflict(
         interval = _row_interval(row)
         if interval and _overlaps(start, end, *interval):
             conflicts.append({"type": "venue", "conflicting_match_id": row["id"]})
+
+    # The master sheet holds bookings this system did not make. They hold the
+    # venue just as firmly, so they are checked in the same pass.
+    for row in conn.execute(
+        """
+        SELECT id, external_ref, source, description, start_time, end_time
+        FROM external_bookings WHERE venue_id = ?
+        """,
+        (venue_id,),
+    ).fetchall():
+        interval = _row_interval(row)
+        if interval and _overlaps(start, end, *interval):
+            conflicts.append(
+                {
+                    "type": "venue_external",
+                    "source": row["source"],
+                    "external_ref": row["external_ref"],
+                    "description": row["description"],
+                }
+            )
     return conflicts
 
 
@@ -144,8 +172,15 @@ def check_player_conflicts(
     or season: a student double-booked across Basketball and Cricket is the
     exact failure this project was built to catch, and narrowing this query
     to the current league would delete that feature.
+
+    Produces two kinds of finding per player. An overlap is a hard clash —
+    they cannot be in two places at once. A blackout is the rest rule: no
+    overlap, but too little recovery between the two matches. They are
+    reported separately because they read very differently to an organizer,
+    and only one of them is about being double-booked.
     """
     start, end = parse_interval(start_time, end_time)
+    rest = timedelta(minutes=BLACKOUT_MINUTES)
 
     rows = conn.execute(
         """
@@ -179,13 +214,98 @@ def check_player_conflicts(
     conflicts = []
     for row in rows:
         interval = _row_interval(row)
-        if interval and _overlaps(start, end, *interval):
+        if interval is None:
+            continue
+        other_start, other_end = interval
+
+        if _overlaps(start, end, other_start, other_end):
             conflicts.append(
                 {
                     "type": "player",
                     "player_id": row["player_id"],
                     "player_name": row["player_name"],
                     "conflicting_match_id": row["match_id"],
+                }
+            )
+            continue
+
+        gap = _rest_gap(start, end, other_start, other_end)
+        if gap < rest:
+            conflicts.append(
+                {
+                    "type": "blackout",
+                    "player_id": row["player_id"],
+                    "player_name": row["player_name"],
+                    "conflicting_match_id": row["match_id"],
+                    "rest_minutes": int(gap.total_seconds() // 60),
+                    "required_minutes": BLACKOUT_MINUTES,
+                }
+            )
+
+    conflicts += _check_external_player_commitments(
+        conn, home_team_id, away_team_id, start, end, rest
+    )
+    return conflicts
+
+
+def _rest_gap(
+    start_a: datetime, end_a: datetime, start_b: datetime, end_b: datetime
+) -> timedelta:
+    """Recovery time between two non-overlapping matches, in either order."""
+    return start_b - end_a if start_b >= end_a else start_a - end_b
+
+
+def _check_external_player_commitments(
+    conn: sqlite3.Connection,
+    home_team_id: int,
+    away_team_id: int,
+    start: datetime,
+    end: datetime,
+    rest: timedelta,
+) -> list[dict]:
+    """The same overlap and rest rules against master-sheet bookings.
+
+    Matched on roll number, since the sheet is kept by people and identifies
+    students the way people do.
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT p.id AS player_id, p.name AS player_name, p.roll_number,
+               eb.source, eb.external_ref, eb.description,
+               eb.start_time, eb.end_time
+        FROM team_members tm
+        JOIN players p ON p.id = tm.player_id
+        JOIN external_booking_players ebp ON ebp.roll_number = p.roll_number
+        JOIN external_bookings eb ON eb.id = ebp.booking_id
+        WHERE tm.team_id IN (?, ?)
+        """,
+        (home_team_id, away_team_id),
+    ).fetchall()
+
+    conflicts = []
+    for row in rows:
+        interval = _row_interval(row)
+        if interval is None:
+            continue
+        other_start, other_end = interval
+        common = {
+            "player_id": row["player_id"],
+            "player_name": row["player_name"],
+            "source": row["source"],
+            "external_ref": row["external_ref"],
+            "description": row["description"],
+        }
+        if _overlaps(start, end, other_start, other_end):
+            conflicts.append({"type": "player_external", **common})
+            continue
+        gap = _rest_gap(start, end, other_start, other_end)
+        if gap < rest:
+            conflicts.append(
+                {
+                    "type": "blackout_external",
+                    **common,
+                    "rest_minutes": int(gap.total_seconds() // 60),
+                    "required_minutes": BLACKOUT_MINUTES,
                 }
             )
     return conflicts

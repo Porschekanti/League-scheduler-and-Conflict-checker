@@ -3,8 +3,15 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from app.conflicts import MatchValidationError, normalize_instant, validate_match
+from app.conflicts import (
+    MatchValidationError,
+    normalize_instant,
+    parse_instant,
+    validate_match,
+)
 from app.deps import get_db, require_role, require_sport_scope
+from app.sheets import push_match
+from app.trimesters import resolve_season, resolve_term
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -16,7 +23,9 @@ class DraftMatchRequest(BaseModel):
     start_time: str  # ISO 8601
     end_time: str
     sport: str
-    season_id: int
+    # No season_id. The trimester is derived from start_time — see
+    # app/trimesters.py. Clients that still send one are ignored rather than
+    # rejected, so older callers keep working.
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -36,6 +45,8 @@ def create_draft(
         # Handlers are sync `def`, so FastAPI runs them in a threadpool and
         # concurrent bookings really do interleave — without BEGIN IMMEDIATE
         # two requests both see a free slot and both insert into it.
+        # The season lookup is inside it too: find-or-create would otherwise
+        # race two first-of-the-trimester bookings against each other.
         conn.execute("BEGIN IMMEDIATE")
 
         conflicts = validate_match(
@@ -46,11 +57,13 @@ def create_draft(
             start_time,
             end_time,
             sport=body.sport,
-            season_id=body.season_id,
         )
         if conflicts:
             conn.rollback()
             raise HTTPException(status.HTTP_409_CONFLICT, {"conflicts": conflicts})
+
+        term = resolve_term(parse_instant(start_time).date())
+        season_id = resolve_season(conn, body.sport, parse_instant(start_time).date())
 
         cur = conn.execute(
             """
@@ -66,7 +79,7 @@ def create_draft(
                 start_time,
                 end_time,
                 body.sport,
-                body.season_id,
+                season_id,
             ),
         )
         conn.commit()
@@ -79,7 +92,14 @@ def create_draft(
         conn.rollback()
         raise
 
-    return {"match_id": cur.lastrowid, "status": "DRAFT", "version": 1}
+    return {
+        "match_id": cur.lastrowid,
+        "status": "DRAFT",
+        "version": 1,
+        "season_id": season_id,
+        "term": term.label,
+        "in_break": term.in_break,
+    }
 
 
 @router.patch("/{draft_id}")
@@ -190,10 +210,17 @@ def publish_draft(
         conn.rollback()
         raise
 
+    # Mirror the confirmed match into the master sheet, after the commit and
+    # deliberately unable to fail it: the booking is already real here, and an
+    # unreachable sheet must not turn a successful publish into an error. The
+    # response says whether it landed so the caller can resync if not.
+    pushed = push_match(conn, draft_id)
+
     return {
         "match_id": draft_id,
         "status": "CONFIRMED",
         "version": body.expected_version + 1,
+        "pushed_to_master_sheet": pushed,
     }
 
 @router.post("/{match_id}/cancel")

@@ -53,6 +53,9 @@ rm -f scheduler.db scheduler.db-wal scheduler.db-shm && .venv/bin/python seed.py
 # conflict-engine regression suite (reseeds itself, safe to re-run)
 .venv/bin/python conflict_regression_test.py
 
+# trimester seasons, blackout, and master-sheet suite (reseeds itself)
+.venv/bin/python booking_rules_test.py
+
 # frontend: no build step — open frontend/index.html directly in a browser
 # with the backend already running. CORS is wide open for exactly this.
 ```
@@ -83,9 +86,13 @@ app/
     teams.py       POST/GET /teams, GET /venues, GET /seasons,
                    GET /teams/{id}/roster  (reference data for clients)
     role_assignments.py  Nominate / accept / revoke HEAD and REP roles
+    master_sheet.py  GET /master-sheet/status, POST /master-sheet/sync
+  trimesters.py    Date -> academic trimester -> season (find-or-create)
+  sheets.py        Master-sheet adapter: CSV and Google backends
 seed.py            Sample users/seasons/teams/venues
 smoke_test.py      Happy-path + core-rule walkthrough
 conflict_regression_test.py  Conflict-engine regression suite
+booking_rules_test.py        Trimesters, blackout, and master-sheet suite
 frontend/index.html  Single-file vanilla-JS client, no dependencies
 ```
 
@@ -191,7 +198,16 @@ whose process dies stays `RUNNING` forever. There is no reaper.
    schedule.
 9. **Check-then-write must be one transaction.** `validate_match` followed by
    an `INSERT`/`UPDATE` is only safe inside `BEGIN IMMEDIATE`; handlers run
-   concurrently in a threadpool.
+   concurrently in a threadpool. The season find-or-create belongs inside that
+   same transaction, or two first-of-the-trimester bookings race each other.
+10. **The blackout is a welfare rule, not a resource rule.** It is about one
+    body being asked to play twice, so a different venue does not excuse it and
+    it spans every sport. `"player"` means double-booked; `"blackout"` means
+    not enough recovery. Keep them as separate conflict types — they read
+    completely differently to an organizer.
+11. **The engine never makes a network call.** Master-sheet rows are mirrored
+    into `external_bookings` and queried in SQL. A booking must not fail, or
+    silently pass, because Google was slow.
 
 ### Timestamp handling — the sharp edge
 
@@ -225,6 +241,67 @@ Note the stored format changed with normalization: existing databases created
 before it hold non-canonical strings. Those rows still validate correctly
 (the read path is defensive) but will sort oddly in `GET /schedules`. Reseed,
 or backfill, to get clean ordering.
+
+### Seasons are derived, never entered
+
+A season is one sport in one academic trimester, and it is worked out from the
+match's own `start_time` rather than supplied by the client. `POST /schedules`,
+the generation worker, `POST /teams` and `POST /players` all take no
+`season_id`; a client that still sends one is ignored rather than rejected, so
+older callers keep working.
+
+`app/trimesters.py` owns the calendar:
+
+| Trimester | Runs |
+|-----------|------|
+| T1 | 1 July – 24 September |
+| T2 | 1 October – 24 December |
+| T3 | 8 January – 21 April |
+
+The academic year runs July → April, so T1/T2 sit in calendar year Y and T3 in
+Y+1 — `Term.academic_year` is always **the year the academic year started**,
+which is the part that is easy to get wrong. Dates in a gap (late September,
+late December, early January, and the April–June summer break) are *not*
+rejected: they attach to the trimester that just ended, with `in_break: true`
+in the response.
+
+`resolve_season` creates the season row on first use, so nobody sets seasons up
+in advance. `UNIQUE(sport, academic_year, term_code)` is what keeps that safe
+under concurrency.
+
+Teams still carry a `season_id`, and a match is **not** forced to match its
+teams' season — teams persist, matches are filed by date.
+
+### The master sheet
+
+`app/sheets.py` links the Google Sheet that people edit by hand. Rows are
+mirrored into `external_bookings` (+ `external_booking_players`, matched on
+roll number) and then checked by the ordinary conflict queries, producing
+`venue_external`, `player_external` and `blackout_external` conflicts.
+
+Configured entirely by environment; the default is off:
+
+```bash
+MASTER_SHEET_BACKEND=none|csv|google   # default none — every call is a no-op
+MASTER_SHEET_CSV=/path/to/master.csv   # csv backend
+MASTER_SHEET_ID=<spreadsheet id>       # google backend
+MASTER_SHEET_TAB=Bookings
+MASTER_SHEET_CREDENTIALS=/path/to/service-account.json
+```
+
+Sheet columns: `ref,venue,start,end,description,players` — `ref` is the row's
+stable identity (sync upserts on it and deletes rows that vanish), `venue`
+matches `venues.name`, and `players` is a `;`-separated list of roll numbers.
+
+The Google backend needs `pip install gspread` plus a service account that the
+sheet is shared with as Editor. **The sheet at the URL in the project brief is
+not publicly readable — anonymous CSV export returns 401** — so the CSV backend
+is what runs today and the Google one activates when credentials exist.
+
+`POST /master-sheet/sync` is HEAD-only, because a sync changes what every sport
+may book. `push_match` mirrors a confirmed match back and deliberately cannot
+fail a publish: the booking is already committed here, and the response says
+whether the push landed via `pushed_to_master_sheet`.
 
 ## Conventions
 
@@ -261,14 +338,20 @@ solved problems:
   at a venue (or for a player) and filter by overlap in Python. Indexes make
   the lookup cheap, but a date-range `WHERE` clause is the next win once the
   stored timestamps are known to be uniformly canonical.
-- There is no travel/rest buffer between matches: back-to-back fixtures at
-  opposite ends of campus are considered conflict-free by design.
+- The blackout is a single global constant (`SCHEDULER_BLACKOUT_MINUTES`,
+  default 90), not per-sport. Your example of a sport wanting a 60-minute gap
+  would need a per-sport column.
+- There is still no travel buffer between *venues* — the blackout covers player
+  rest, but two different players' matches back-to-back at opposite ends of
+  campus are fine by design.
+- Master-sheet sync is manual (`POST /master-sheet/sync`); nothing polls the
+  sheet, so a row added there is invisible until someone syncs.
+- `push_match` only fires on publish, and a failed push is reported but not
+  retried or queued.
 - `VIEWER` is in the role CHECK constraint but no endpoint requires it;
   `GET /schedules` is deliberately unauthenticated.
 - No rate limiting, no audit log, no pagination on `GET /schedules`.
 - No test framework — `smoke_test.py` is a linear script of `assert`s.
-- `requirements.txt` lists `httpx2`, but Starlette's `TestClient` imports
-  `httpx`. Install `httpx` as well or neither test script will run.
 - `cancel_match` in `schedules.py` calls `require_sport_scope` after
   `BEGIN IMMEDIATE` without rolling back, so a scope rejection holds the write
   lock until the connection closes — the same leak `publish_draft` wraps in

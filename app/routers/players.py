@@ -13,8 +13,11 @@ class AddPlayerRequest(BaseModel):
     name: str
     roll_number: str
     team_id: int
-    sport: str
-    season_id: int
+    # Both follow from the team, which already belongs to exactly one sport and
+    # one trimester. Supplying them is allowed but has to agree; omitting them
+    # is the normal path now that seasons are not entered by hand.
+    sport: str | None = None
+    season_id: int | None = None
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -26,9 +29,13 @@ def add_player(
     team = conn.execute("SELECT sport, season_id FROM teams WHERE id = ?", (body.team_id,)).fetchone()
     if team is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Team not found")
-    if body.sport != team["sport"] or body.season_id != team["season_id"]:
+    if (body.sport is not None and body.sport != team["sport"]) or (
+        body.season_id is not None and body.season_id != team["season_id"]
+    ):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "sport and season_id must match the selected team")
-    require_sport_scope(user, team["sport"])
+    sport = team["sport"]
+    season_id = team["season_id"]
+    require_sport_scope(user, sport)
 
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -58,8 +65,8 @@ def add_player(
             (
                 body.team_id,
                 player_id,
-                body.sport,
-                body.season_id,
+                sport,
+                season_id,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -68,7 +75,7 @@ def add_player(
         conn.rollback()
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Player already on a team in {body.sport} for this season ({exc})",
+            f"Player already on a team in {sport} for this season ({exc})",
         )
 
     return {"player_id": player_id, "team_id": body.team_id}

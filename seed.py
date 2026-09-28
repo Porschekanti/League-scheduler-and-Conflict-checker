@@ -1,6 +1,9 @@
 """Run once after init: python seed.py"""
+from datetime import date
+
 from app.db import get_connection, init_db
 from app.security import hash_password
+from app.trimesters import resolve_season, resolve_term
 
 init_db()
 conn = get_connection()
@@ -34,27 +37,35 @@ conn.execute(
 )
 conn.execute("UPDATE users SET role = 'HEAD', sport_scope = NULL WHERE id = ?", (head_id,))
 
-conn.execute(
-    "INSERT INTO seasons (sport, start_date, end_date, is_active) VALUES (?, ?, ?, 1)",
-    ("Basketball", "2026-01-01", "2026-12-31"),
-)
-conn.execute(
-    "INSERT INTO seasons (sport, start_date, end_date, is_active) VALUES (?, ?, ?, 1)",
-    ("Cricket", "2026-01-01", "2026-12-31"),
-)
+# Seasons are no longer invented by hand — they follow the academic calendar.
+# Teams are registered in whichever trimester today falls in; a match scheduled
+# in a later trimester creates that season by itself on first booking.
+today = date.today()
+current_term = resolve_term(today)
+basketball_season = resolve_season(conn, "Basketball", today)
+cricket_season = resolve_season(conn, "Cricket", today)
 
 conn.execute("INSERT INTO venues (name, location, capacity) VALUES (?, ?, ?)",
              ("Main Court", "Sports Complex", 200))
 conn.execute("INSERT INTO venues (name, location, capacity) VALUES (?, ?, ?)",
              ("Cricket Ground", "East Campus", 500))
 
-conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Basketball', 1)", ("Goon Squad",))
-conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Basketball', 1)", ("Rebels",))
-conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Cricket', 2)", ("Strikers",))
-conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Cricket', 2)", ("Chargers",))
+conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Basketball', ?)",
+             ("Goon Squad", basketball_season))
+conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Basketball', ?)",
+             ("Rebels", basketball_season))
+conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Cricket', ?)",
+             ("Strikers", cricket_season))
+conn.execute("INSERT INTO teams (name, sport, season_id) VALUES (?, 'Cricket', ?)",
+             ("Chargers", cricket_season))
 
 conn.commit()
 conn.close()
 print("Seeded: head@example.edu / head-pass, bball-rep@example.edu / rep-pass, cricket-rep@example.edu / rep-pass")
 print("Teams: 1=Goon Squad (Basketball), 2=Rebels (Basketball), 3=Strikers (Cricket), 4=Chargers (Cricket)")
-print("Venues: 1=Main Court, 2=Cricket Ground | Seasons: 1=Basketball 2026, 2=Cricket 2026")
+print(f"Venues: 1=Main Court, 2=Cricket Ground")
+print(f"Current trimester: {current_term.label} "
+      f"({current_term.start_date} .. {current_term.end_date})"
+      f"{' — today is in a break, attached to this term' if current_term.in_break else ''}")
+print(f"Seasons: {basketball_season}=Basketball {current_term.label}, "
+      f"{cricket_season}=Cricket {current_term.label}")

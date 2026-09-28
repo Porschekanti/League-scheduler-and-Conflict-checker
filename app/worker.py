@@ -20,8 +20,14 @@ players from being scheduled by anyone else.
 import json
 import time
 
-from app.conflicts import MatchValidationError, normalize_instant, validate_match
+from app.conflicts import (
+    MatchValidationError,
+    normalize_instant,
+    parse_instant,
+    validate_match,
+)
 from app.db import get_connection
+from app.trimesters import resolve_season
 
 
 def run_job(job_id: int) -> None:
@@ -37,7 +43,9 @@ def run_job(job_id: int) -> None:
         ).fetchone()
         payload = json.loads(row["payload"])
         sport = payload["sport"]
-        season_id = payload["season_id"]
+        # No season from the payload — each fixture is filed under the trimester
+        # its own date falls in, so a batch spanning a trimester boundary lands
+        # correctly instead of all going into whichever season was requested.
 
         # Simulate non-trivial solver work so the async/poll behavior is
         # actually observable rather than completing instantly. Deliberately
@@ -60,7 +68,9 @@ def run_job(job_id: int) -> None:
                         start_time,
                         end_time,
                         sport=sport,
-                        season_id=season_id,
+                    )
+                    season_id = resolve_season(
+                        conn, sport, parse_instant(start_time).date()
                     )
                 except MatchValidationError as exc:
                     # One malformed candidate must not sink the whole batch —

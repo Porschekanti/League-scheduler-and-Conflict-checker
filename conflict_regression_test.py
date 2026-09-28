@@ -128,9 +128,44 @@ check("a player booked in Basketball cannot also play Cricket then",
 check("and the conflict names the player",
       any(c["type"] == "player" for c in r.json()["detail"]["conflicts"]), r.text)
 
-print("\n=== Half-open intervals: back-to-back matches are legal ===")
-r = book(start_time="2026-10-01T19:00:00", end_time="2026-10-01T20:00:00")
-check("19:00-20:00 right after 18:00-19:00 is allowed", r.status_code == 201, r.text)
+print("\n=== Half-open intervals: a venue can be reused back-to-back ===")
+# Two fresh teams with nobody on them, so only the VENUE rule is in play. The
+# old version of this test used teams 1 and 2, which share a player — so it was
+# really testing the player rule and passed only because no rest rule existed.
+empty_a = client.post("/teams", headers=HEAD,
+                      json={"name": "Empty A", "sport": "Basketball"}).json()["team_id"]
+empty_b = client.post("/teams", headers=HEAD,
+                      json={"name": "Empty B", "sport": "Basketball"}).json()["team_id"]
+r = book(home_team_id=empty_a, away_team_id=empty_b,
+         start_time="2026-10-01T19:00:00", end_time="2026-10-01T20:00:00")
+check("19:00-20:00 right after 18:00-19:00 at the same venue is allowed",
+      r.status_code == 201, r.text)
+
+print("\n=== Blackout: a player needs 90 minutes between matches ===")
+# Pashi (R101) is on team 1 and already plays 18:00-19:00 on 2026-10-01.
+r = book(home_team_id=empty_a, away_team_id=1,
+         start_time="2026-10-01T19:00:00", end_time="2026-10-01T20:00:00", venue_id=2)
+check("back-to-back for the SAME player is refused even at another venue",
+      r.status_code == 409, r.text)
+check("and it is reported as a blackout, not a double-booking",
+      all(c["type"] == "blackout" for c in r.json()["detail"]["conflicts"]), r.text)
+check("with the shortfall spelled out",
+      r.json()["detail"]["conflicts"][0]["rest_minutes"] == 0
+      and r.json()["detail"]["conflicts"][0]["required_minutes"] == 90, r.text)
+
+r = book(home_team_id=empty_a, away_team_id=1, venue_id=2,
+         start_time="2026-10-01T20:29:00", end_time="2026-10-01T21:29:00")
+check("89 minutes of rest is still refused", r.status_code == 409, r.text)
+
+r = book(home_team_id=empty_a, away_team_id=1, venue_id=2,
+         start_time="2026-10-01T20:30:00", end_time="2026-10-01T21:30:00")
+check("exactly 90 minutes of rest is allowed", r.status_code == 201, r.text)
+
+# The rule is symmetric: a match placed BEFORE an existing one needs the gap too.
+r = book(home_team_id=empty_b, away_team_id=1, venue_id=2,
+         start_time="2026-10-01T16:00:00", end_time="2026-10-01T17:00:00")
+check("an earlier match leaving only 60 minutes before the next is refused",
+      r.status_code == 409, r.text)
 
 print("\n=== A malformed match is rejected, never reported as conflict-free ===")
 for name, kw in [

@@ -22,8 +22,9 @@ class FixtureRequest(BaseModel):
 
 class GenerationRequest(BaseModel):
     sport: str
-    season_id: int
     fixtures: list[FixtureRequest]  # candidate fixtures to attempt
+    # No season_id: the worker files each fixture under the trimester its own
+    # date falls in, so one batch may legitimately span two seasons.
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
