@@ -2,8 +2,12 @@
 scheduler.db
 scheduler.db-wal
 scheduler.db-shm
+*.db
+*.sqlite
 
 .venv/
 venv/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.env

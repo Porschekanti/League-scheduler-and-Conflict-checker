@@ -77,8 +77,12 @@ app/
     auth.py        POST /auth/login
     players.py     POST /players (roster; duplicate rule enforced by DB)
     schedules.py   POST /schedules, PATCH /schedules/{id},
-                   POST /schedules/{id}/publish, GET /schedules
+                   POST /schedules/{id}/publish, POST /schedules/{id}/cancel,
+                   GET /schedules
     jobs.py        POST /schedule-generations, GET /schedule-generations/{id}
+    teams.py       POST/GET /teams, GET /venues, GET /seasons,
+                   GET /teams/{id}/roster  (reference data for clients)
+    role_assignments.py  Nominate / accept / revoke HEAD and REP roles
 seed.py            Sample users/seasons/teams/venues
 smoke_test.py      Happy-path + core-rule walkthrough
 conflict_regression_test.py  Conflict-engine regression suite
@@ -105,6 +109,14 @@ confusing behaviour after a schema edit.
 - `matches` — has `status` (`DRAFT`/`CONFIRMED`/`CANCELLED`) and an integer
   `version` used for optimistic concurrency on publish.
 - `jobs` — async schedule-generation jobs, with JSON `payload` and `result`.
+- `academic_terms` — a school year; `is_current` marks the live one.
+- `role_assignments` — the succession ledger. A HEAD/REP post is nominated by
+  one user for another and only takes effect on acceptance
+  (`PENDING`/`ACCEPTED`/`REVOKED`). `seed.py` bootstraps the first HEAD with a
+  pre-accepted row, since nobody exists yet to nominate them.
+
+Note `jobs` must be declared **before** `matches` in `SCHEMA` — `matches.job_id`
+references it, and `executescript` runs the DDL in order.
 
 ### The three RBAC layers (`deps.py`)
 
@@ -243,8 +255,6 @@ solved problems:
 - `JWT_SECRET` defaults to a hardcoded dev string; override with
   `SCHEDULER_JWT_SECRET`. There is no token refresh or revocation.
 - CORS is `allow_origins=["*"]` for local development convenience.
-- `GET /schedule-generations/{id}` returns `200 {"error": ...}` for a missing
-  job instead of `404`.
 - Generation jobs run as in-process threads: a `RUNNING` job whose process
   dies stays `RUNNING` forever, and there is no reaper to requeue it.
 - Conflict queries have no time-window bound in SQL — they fetch every match
@@ -257,3 +267,9 @@ solved problems:
   `GET /schedules` is deliberately unauthenticated.
 - No rate limiting, no audit log, no pagination on `GET /schedules`.
 - No test framework — `smoke_test.py` is a linear script of `assert`s.
+- `requirements.txt` lists `httpx2`, but Starlette's `TestClient` imports
+  `httpx`. Install `httpx` as well or neither test script will run.
+- `cancel_match` in `schedules.py` calls `require_sport_scope` after
+  `BEGIN IMMEDIATE` without rolling back, so a scope rejection holds the write
+  lock until the connection closes — the same leak `publish_draft` wraps in
+  try/except. Worth tidying when that file is next touched.

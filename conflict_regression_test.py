@@ -196,7 +196,7 @@ r = client.post(
 )
 job_id = r.json()["job_id"]
 for _ in range(20):
-    state = client.get(f"/schedule-generations/{job_id}").json()
+    state = client.get(f"/schedule-generations/{job_id}", headers=BBALL).json()
     if state["status"] in ("COMPLETED", "FAILED"):
         break
     time.sleep(0.3)
