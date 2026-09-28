@@ -39,7 +39,7 @@ cd "/Users/varun/Developer/software design practical "
 
 ```bash
 # one-time setup
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt httpx
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # reset + seed the database (destructive — drops all scheduling data)
 rm -f scheduler.db scheduler.db-wal scheduler.db-shm && .venv/bin/python seed.py
@@ -61,7 +61,7 @@ rm -f scheduler.db scheduler.db-wal scheduler.db-shm && .venv/bin/python seed.py
 ```
 
 `smoke_test.py` uses `fastapi.testclient.TestClient`, so it does **not** need
-a running server — but it does need `httpx` installed and a seeded
+a running server — but it does need `httpx2` installed and a seeded
 `scheduler.db`. It asserts on hardcoded seeded IDs (teams 1/2/3, venues 1/2,
 seasons 1/2) and on absolute row IDs, so **re-running it without re-seeding
 will fail**. Always reseed first.
@@ -71,7 +71,7 @@ will fail**. Always reseed first.
 ```
 app/
   main.py          FastAPI app, permissive CORS, init_db() on startup
-  db.py            Schema (DDL as one string) + per-request connection factory
+  db.py            Schema, migrations, RLS triggers + per-request connection factory
   security.py      PBKDF2-SHA256 password hashing, HS256 JWT issue/verify
   deps.py          The three-layer RBAC check
   conflicts.py     ** the conflict engine — the heart of the project **
@@ -94,13 +94,15 @@ smoke_test.py      Happy-path + core-rule walkthrough
 conflict_regression_test.py  Conflict-engine regression suite
 booking_rules_test.py        Trimesters, blackout, and master-sheet suite
 frontend/index.html  Single-file vanilla-JS client, no dependencies
+migrate_csv.py       Legacy master-sheet CSV -> SQLite importer
+presentation_seed.py Reproducible final-day demo database generator
+docs/database_schema.md  Complete column dictionary and RLS notes
 ```
 
-There is no migration tool. `init_db()` runs `CREATE TABLE IF NOT EXISTS`
-only, so **changing a column type or constraint requires deleting
-`scheduler.db` and reseeding** — an edited `SCHEMA` string will silently not
-apply to an existing database file. This is the single most common way to get
-confusing behaviour after a schema edit.
+`migrate_csv.py` imports the legacy master-sheet CSV into SQLite, and
+`init_db()` backfills audit columns and RLS triggers on an existing database.
+Changes that alter an existing constraint still require a deliberate
+backup/rebuild; additive columns are migrated automatically.
 
 ### Domain model
 
@@ -350,9 +352,5 @@ solved problems:
   retried or queued.
 - `VIEWER` is in the role CHECK constraint but no endpoint requires it;
   `GET /schedules` is deliberately unauthenticated.
-- No rate limiting, no audit log, no pagination on `GET /schedules`.
+- No rate limiting, no event-level audit log, no pagination on `GET /schedules`.
 - No test framework — `smoke_test.py` is a linear script of `assert`s.
-- `cancel_match` in `schedules.py` calls `require_sport_scope` after
-  `BEGIN IMMEDIATE` without rolling back, so a scope rejection holds the write
-  lock until the connection closes — the same leak `publish_draft` wraps in
-  try/except. Worth tidying when that file is next touched.

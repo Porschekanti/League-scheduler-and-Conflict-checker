@@ -14,6 +14,9 @@ from app.sheets import push_match
 from app.trimesters import resolve_season, resolve_term
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
+UNPROCESSABLE_STATUS = getattr(
+    status, "HTTP_422_UNPROCESSABLE_CONTENT", 422
+)
 
 
 class DraftMatchRequest(BaseModel):
@@ -85,7 +88,7 @@ def create_draft(
         conn.commit()
     except MatchValidationError as exc:
         conn.rollback()
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        raise HTTPException(UNPROCESSABLE_STATUS, str(exc))
     except HTTPException:
         raise
     except Exception:
@@ -187,7 +190,7 @@ def publish_draft(
             )
         except MatchValidationError as exc:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_STATUS,
                 f"Draft cannot be published: {exc}",
             )
 
@@ -226,19 +229,22 @@ def publish_draft(
 @router.post("/{match_id}/cancel")
 def cancel_match(match_id: int, body: CancelRequest, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD", "REP"))):
     conn.execute("BEGIN IMMEDIATE")
-    match = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
-    if match is None:
+    try:
+        match = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+        if match is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Match not found")
+        require_sport_scope(user, match["sport"])
+        if match["status"] == "CANCELLED":
+            raise HTTPException(status.HTTP_409_CONFLICT, "Match is already CANCELLED")
+        if match["version"] != body.expected_version:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Version mismatch — expected {body.expected_version}, current {match['version']}")
+        conn.execute("UPDATE matches SET status = 'CANCELLED', version = version + 1 WHERE id = ? AND version = ?", (match_id, body.expected_version))
+        conn.commit()
+    except Exception:
+        # Scope, lookup, and optimistic-version failures must release the
+        # BEGIN IMMEDIATE lock before the connection is returned to the pool.
         conn.rollback()
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Match not found")
-    require_sport_scope(user, match["sport"])
-    if match["status"] == "CANCELLED":
-        conn.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "Match is already CANCELLED")
-    if match["version"] != body.expected_version:
-        conn.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, f"Version mismatch — expected {body.expected_version}, current {match['version']}")
-    conn.execute("UPDATE matches SET status = 'CANCELLED', version = version + 1 WHERE id = ? AND version = ?", (match_id, body.expected_version))
-    conn.commit()
+        raise
     return {"match_id": match_id, "status": "CANCELLED", "version": body.expected_version + 1}
 
 

@@ -3,7 +3,7 @@ import sqlite3
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 
-from app.db import get_connection
+from app.db import get_connection, set_actor
 from app.security import decode_access_token
 
 
@@ -33,6 +33,10 @@ def get_current_user(
     ).fetchone()
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User no longer exists")
+    # The SQLite triggers use this connection-local actor as a second line of
+    # defence. Route-level role and sport checks still provide the user-facing
+    # error responses; the trigger prevents accidental/direct SQL writes.
+    set_actor(conn, user["role"], user["id"])
     return user
 
 

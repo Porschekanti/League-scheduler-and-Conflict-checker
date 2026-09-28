@@ -12,11 +12,20 @@ python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 python seed.py                  # creates scheduler.db with sample data
+# optional: import the legacy master-sheet CSV into SQLite
+python migrate_csv.py --csv bookings.csv --database scheduler.db
+# optional: build a separate final-day demo database
+python presentation_seed.py --database presentation.db
 uvicorn app.main:app --reload
 ```
 
 Server runs at `http://localhost:8000`. Interactive docs at
 `http://localhost:8000/docs`.
+
+The complete SQLite data dictionary, including the player and booking columns,
+is in [`docs/database_schema.md`](docs/database_schema.md). The importer uses
+the existing master-sheet CSV columns (`ref,venue,start,end,description,players`)
+and mirrors them into SQLite before conflict checks run.
 
 Seeded accounts (see console output from `seed.py` for IDs):
 - `head@example.edu` / `head-pass` — Sports Head (global scope)
@@ -70,7 +79,7 @@ backend addition.
 ## Running the smoke test
 
 ```bash
-pip install httpx  # or httpx2, depending on your starlette version
+pip install -r requirements.txt
 python smoke_test.py
 ```
 

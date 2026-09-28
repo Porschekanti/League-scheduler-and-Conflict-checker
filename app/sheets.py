@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.conflicts import MatchValidationError, normalize_instant
+from app.db import set_actor
 
 CSV_COLUMNS = ["ref", "venue", "start", "end", "description", "players"]
 
@@ -238,6 +239,11 @@ def sync_from_sheet(conn: sqlite3.Connection, sheet: MasterSheet | None = None) 
     returned under `rejected` rather than dropped quietly — a row the engine
     cannot read is a booking it cannot protect.
     """
+    # This function is also used by the offline importer and by maintenance
+    # scripts.  Those callers have already crossed the API/auth boundary (or
+    # are explicitly offline SYSTEM work), so make the database actor explicit
+    # for the duration of the mirror write.
+    set_actor(conn, "SYSTEM")
     sheet = sheet or get_master_sheet()
     pulled = sheet.pull()
     now = datetime.now(timezone.utc).isoformat()
