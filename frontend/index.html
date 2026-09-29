@@ -9,18 +9,59 @@
 </head>
 <body>
 
+<!-- ====================================================== liquid glass =====
+     feTurbulence makes a noise field; feGaussianBlur softens it so the
+     distortion rolls rather than fizzes; feDisplacementMap shoves each
+     backdrop pixel sideways by that noise. The whole filter is then handed to
+     backdrop-filter alongside the blur.
+
+     Two variants, because the ripple has to match the element's size: a long
+     shallow wave for the nav, a tighter one for buttons.                 -->
+<svg width="0" height="0" aria-hidden="true"
+     style="position:absolute;pointer-events:none">
+  <defs>
+    <filter id="glass-nav" x="-20%" y="-20%" width="140%" height="140%"
+            color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.010"
+                    numOctaves="2" seed="11" result="noise"/>
+      <feGaussianBlur in="noise" stdDeviation="2.5" result="softNoise"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="16"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+
+    <filter id="glass-btn" x="-25%" y="-25%" width="150%" height="150%"
+            color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.014 0.020"
+                    numOctaves="2" seed="5" result="noise"/>
+      <feGaussianBlur in="noise" stdDeviation="1.6" result="softNoise"/>
+      <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="9"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+</svg>
+
 <header class="appbar">
   <div class="brand">
     <div class="brand-mark" aria-hidden="true">IS</div>
     <div class="brand-name">Intramural Scheduler</div>
   </div>
 
+  <nav class="nav" id="nav" aria-label="Main">
+    <!-- Anchored to whichever link is hovered; see the pill rules in CSS. -->
+    <div class="nav-pill" aria-hidden="true"></div>
+    <button class="nav-link" type="button" data-view="dashboard" aria-current="page">Dashboard</button>
+    <button class="nav-link" type="button" data-view="schedule">Schedule</button>
+    <button class="nav-link" type="button" data-view="book"     data-auth hidden>Book</button>
+    <button class="nav-link" type="button" data-view="roster"   data-auth hidden>Roster</button>
+    <button class="nav-link" type="button" data-view="generate" data-auth hidden>Generate</button>
+    <button class="nav-link" type="button" data-view="admin"    data-head hidden>Admin</button>
+  </nav>
+
   <div class="appbar-right">
     <div class="term-badge" id="term-badge" hidden>
       <span class="dot" aria-hidden="true"></span>
       <span><b id="term-label">—</b> <span id="term-note"></span></span>
     </div>
-
     <div class="session-chip" id="session-chip" hidden>
       <span>
         <span class="who" id="session-who">—</span>
@@ -28,24 +69,112 @@
       </span>
       <button class="btn btn-ghost btn-sm" id="signout" type="button">Sign out</button>
     </div>
+    <button class="btn btn-ghost btn-sm" id="signin-nav" type="button">Sign in</button>
   </div>
 </header>
 
-<main class="shell">
+<!-- ================================================================ views -->
 
-  <!-- ================================================== public schedule ===
-       Jakob's Law: a schedule belongs in a month grid, on the left, where
-       every calendar anyone already uses puts it. The grid also shows load
-       and gaps at a glance in a way a flat list cannot.                   -->
-  <section class="panel" aria-labelledby="sched-title">
-    <div class="panel-head">
-      <div>
-        <h1 class="panel-title" id="sched-title">Confirmed schedule</h1>
-        <div class="panel-sub">Public — no sign-in needed. Refreshes on its own.</div>
-      </div>
-      <span class="pill pill-sport" id="match-count">—</span>
+<!-- ----------------------------------------------------------- dashboard -->
+<main class="view" id="view-dashboard">
+  <div class="view-head">
+    <div>
+      <h1 class="view-title">Dashboard</h1>
+      <div class="view-sub" id="dash-sub">The state of the schedule right now.</div>
+    </div>
+    <button class="btn btn-ghost btn-sm" id="dash-refresh" type="button">Refresh</button>
+  </div>
+
+  <!-- Stat tiles, not charts: one number answering one question is a hero
+       number, and a chart around it adds ink without adding meaning. -->
+  <section class="tiles" id="tiles" aria-label="Summary"></section>
+
+  <div class="dash-grid">
+    <div>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Next up</h2>
+            <div class="panel-sub">Confirmed matches, soonest first.</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-goto="schedule" type="button">Open calendar</button>
+        </div>
+        <div id="next-up"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Matches per day, next 7 days</h2>
+            <div class="panel-sub">So a crowded day is visible before anyone books into it.</div>
+          </div>
+        </div>
+        <div class="load-strip" id="load-strip"></div>
+        <div class="load-axis" id="load-axis"></div>
+      </section>
     </div>
 
+    <div>
+      <section class="panel accent-card" id="pending-card" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Role offered to you</h2>
+            <div class="panel-sub">It only takes effect once you accept.</div>
+          </div>
+        </div>
+        <div class="panel-body stack" id="pending-list"></div>
+      </section>
+
+      <section class="panel" id="dash-signin">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Organizer sign-in</h2>
+            <div class="panel-sub">Sports Head or Sports Rep</div>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="group">
+            <div class="field">
+              <label for="login-email">Email</label>
+              <input id="login-email" type="email" autocomplete="username"
+                     placeholder="head@example.edu" value="head@example.edu">
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <input id="login-password" type="password" autocomplete="current-password"
+                     placeholder="........" value="head-pass">
+            </div>
+            <button class="btn btn-primary" id="login-submit" type="button">Sign in</button>
+            <div id="login-result"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="dash-drafts" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">Drafts awaiting publish</h2>
+            <div class="panel-sub">Holding their venue and players already.</div>
+          </div>
+          <span class="pill pill-draft" id="draft-count">0</span>
+        </div>
+        <div class="panel-body" id="drafts"></div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<!-- ------------------------------------------------------------ schedule -->
+<main class="view" id="view-schedule" hidden>
+  <div class="view-head">
+    <div>
+      <h1 class="view-title">Schedule</h1>
+      <div class="view-sub">Public — no sign-in needed. Refreshes on its own.</div>
+    </div>
+    <span class="pill pill-sport" id="match-count">—</span>
+  </div>
+
+  <section class="panel">
     <div class="cal-bar">
       <div class="cal-nav">
         <button class="btn btn-ghost btn-icon" id="cal-prev" type="button" aria-label="Previous month">&lsaquo;</button>
@@ -61,130 +190,87 @@
     </div>
 
     <div class="grid" id="calendar"></div>
-
-    <div class="panel-head detail-head">
-      <h2 class="panel-title">Match details</h2>
-    </div>
-    <div id="match-detail"></div>
+    <div class="cal-note" id="cal-note" hidden></div>
   </section>
 
-  <!-- ==================================================== organizer rail -->
-  <aside class="rail">
+  <section class="panel">
+    <div class="panel-head"><h2 class="panel-title">Match details</h2></div>
+    <div id="match-detail"></div>
+  </section>
+</main>
 
-    <!-- A pending handover is rare and consequential, so it gets its own card
-         at the top rather than hiding inside a tab (Von Restorff). -->
-    <section class="panel accent-card" id="pending-card" hidden>
-      <div class="panel-head">
-        <div>
-          <h2 class="panel-title">Role offered to you</h2>
-          <div class="panel-sub">It only takes effect once you accept.</div>
+<!-- ---------------------------------------------------------------- book -->
+<main class="view" id="view-book" hidden>
+  <div class="view-head">
+    <div>
+      <h1 class="view-title">Book a match</h1>
+      <div class="view-sub">Checked against every venue, player and rest period before it is saved.</div>
+    </div>
+  </div>
+
+  <section class="panel" style="max-width:560px">
+    <div class="panel-body">
+      <!-- Proximity: who / where-and-when / act. -->
+      <div class="group">
+        <div class="group-label">Who is playing</div>
+        <div class="field">
+          <label for="b-sport">Sport</label>
+          <select id="b-sport"></select>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="b-home">Home</label>
+            <select id="b-home"></select>
+          </div>
+          <div class="field">
+            <label for="b-away">Away</label>
+            <select id="b-away"></select>
+          </div>
         </div>
       </div>
-      <div class="panel-body stack" id="pending-list"></div>
-    </section>
 
-    <!-- Sign in: one job, one button. -->
-    <section class="panel" id="login-card" aria-labelledby="login-title">
-      <div class="panel-head">
-        <div>
-          <h2 class="panel-title" id="login-title">Organizer sign-in</h2>
-          <div class="panel-sub">Sports Head or Sports Rep</div>
+      <div class="group">
+        <div class="group-label">Where and when</div>
+        <div class="field">
+          <label for="b-venue">Venue</label>
+          <select id="b-venue"></select>
         </div>
+        <div class="row2">
+          <div class="field">
+            <label for="b-start">Starts</label>
+            <input id="b-start" type="datetime-local" step="60">
+          </div>
+          <div class="field">
+            <label for="b-end">Ends</label>
+            <input id="b-end" type="datetime-local" step="60">
+          </div>
+        </div>
+        <div class="hint">The trimester is worked out from the date — you never pick a season.</div>
       </div>
+
+      <div class="group">
+        <!-- Fitts: full width, 44px, directly under the last field. -->
+        <button class="btn btn-primary" id="book-submit" type="button">Check and create draft</button>
+        <div id="book-result"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- -------------------------------------------------------------- roster -->
+<main class="view" id="view-roster" hidden>
+  <div class="view-head">
+    <div>
+      <h1 class="view-title">Roster</h1>
+      <div class="view-sub">A student may play several sports, but only one team per sport in a trimester.</div>
+    </div>
+  </div>
+
+  <div class="dash-grid">
+    <section class="panel">
+      <div class="panel-head"><h2 class="panel-title">Add a player</h2></div>
       <div class="panel-body">
         <div class="group">
-          <div class="field">
-            <label for="login-email">Email</label>
-            <input id="login-email" type="email" autocomplete="username"
-                   placeholder="head@example.edu" value="head@example.edu">
-          </div>
-          <div class="field">
-            <label for="login-password">Password</label>
-            <input id="login-password" type="password" autocomplete="current-password"
-                   placeholder="........" value="head-pass">
-          </div>
-          <button class="btn btn-primary" id="login-submit" type="button">Sign in</button>
-          <div id="login-result"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Hick's Law: five jobs, only one set of controls visible at a time. -->
-    <section class="panel" id="organizer" hidden aria-labelledby="tools-title">
-      <h2 class="sr-only" id="tools-title">Organizer tools</h2>
-
-      <div class="tabs" role="tablist" aria-label="Organizer tools">
-        <button class="tab" role="tab" data-tab="book"     aria-selected="true"  type="button">Book</button>
-        <button class="tab" role="tab" data-tab="drafts"   aria-selected="false" type="button">
-          Drafts <span class="pill pill-draft" id="draft-count">0</span>
-        </button>
-        <button class="tab" role="tab" data-tab="roster"   aria-selected="false" type="button">Roster</button>
-        <button class="tab" role="tab" data-tab="generate" aria-selected="false" type="button">Generate</button>
-        <button class="tab" role="tab" data-tab="admin"    aria-selected="false" type="button" id="admin-tab" hidden>Admin</button>
-      </div>
-
-      <!-- ------------------------------------------------------- book ---
-           Proximity: who / where-and-when / act. Three groups, tight
-           inside and clearly separated from one another.               -->
-      <div class="panel-body tabpanel is-active" data-panel="book" role="tabpanel">
-        <div class="group">
-          <div class="group-label">Who is playing</div>
-          <div class="field">
-            <label for="b-sport">Sport</label>
-            <select id="b-sport"></select>
-          </div>
-          <div class="row2">
-            <div class="field">
-              <label for="b-home">Home</label>
-              <select id="b-home"></select>
-            </div>
-            <div class="field">
-              <label for="b-away">Away</label>
-              <select id="b-away"></select>
-            </div>
-          </div>
-        </div>
-
-        <div class="group">
-          <div class="group-label">Where and when</div>
-          <div class="field">
-            <label for="b-venue">Venue</label>
-            <select id="b-venue"></select>
-          </div>
-          <div class="row2">
-            <div class="field">
-              <label for="b-start">Starts</label>
-              <input id="b-start" type="datetime-local" step="60">
-            </div>
-            <div class="field">
-              <label for="b-end">Ends</label>
-              <input id="b-end" type="datetime-local" step="60">
-            </div>
-          </div>
-          <div class="hint">The trimester is worked out from the date — you never pick a season.</div>
-        </div>
-
-        <div class="group">
-          <!-- Fitts: full width, 44px tall, directly under the last field so
-               the pointer has almost nowhere left to travel. -->
-          <button class="btn btn-primary" id="book-submit" type="button">Check and create draft</button>
-          <div id="book-result"></div>
-        </div>
-      </div>
-
-      <!-- ----------------------------------------------------- drafts --- -->
-      <div class="panel-body tabpanel" data-panel="drafts" role="tabpanel">
-        <div id="drafts"></div>
-        <div class="hint" style="margin-top:14px">
-          A draft holds its venue and players but stays invisible to viewers
-          until published. Cancelling releases the slot straight away.
-        </div>
-      </div>
-
-      <!-- ----------------------------------------------------- roster --- -->
-      <div class="panel-body tabpanel" data-panel="roster" role="tabpanel">
-        <div class="group">
-          <div class="group-label">Add a player</div>
           <div class="field">
             <label for="p-team">Team</label>
             <select id="p-team"></select>
@@ -201,14 +287,6 @@
           </div>
           <button class="btn btn-primary" id="roster-submit" type="button">Add to roster</button>
           <div id="roster-result"></div>
-          <div class="hint">
-            A student may play several sports, but only one team per sport in a trimester.
-          </div>
-        </div>
-
-        <div class="group">
-          <div class="group-label">Current roster</div>
-          <div id="roster-list" class="stack"></div>
         </div>
 
         <div class="group">
@@ -227,34 +305,63 @@
           <div id="team-result"></div>
         </div>
       </div>
+    </section>
 
-      <!-- --------------------------------------------------- generate ---
-           A fixture builder, not a JSON box: the same information without
-           asking anyone to hand-write syntax a typo silently breaks.    -->
-      <div class="panel-body tabpanel" data-panel="generate" role="tabpanel">
-        <div class="group">
-          <div class="group-label">Candidate fixtures</div>
-          <div class="hint">
-            Each one is checked against everything else. Clean fixtures become
-            drafts; the rest come back with the reason they were skipped.
-          </div>
-          <div id="fixtures" class="stack"></div>
-          <button class="btn btn-ghost" id="add-fixture" type="button">+ Add fixture</button>
-        </div>
-        <div class="group">
-          <button class="btn btn-primary" id="generate-submit" type="button">Run generation</button>
-          <div id="generate-result"></div>
-        </div>
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">Current roster</h2>
+        <span class="pill pill-sport" id="roster-count">—</span>
       </div>
+      <div class="panel-body stack" id="roster-list"></div>
+    </section>
+  </div>
+</main>
 
-      <!-- ------------------------------------------------------ admin --- -->
-      <div class="panel-body tabpanel" data-panel="admin" role="tabpanel">
+<!-- ------------------------------------------------------------ generate -->
+<main class="view" id="view-generate" hidden>
+  <div class="view-head">
+    <div>
+      <h1 class="view-title">Generate fixtures</h1>
+      <div class="view-sub">Each candidate is checked against everything else; clean ones become drafts.</div>
+    </div>
+  </div>
+
+  <section class="panel" style="max-width:620px">
+    <div class="panel-body">
+      <div class="group">
+        <div class="group-label">Candidate fixtures</div>
+        <div class="hint">
+          A fixture builder rather than a JSON box, so a typo cannot silently
+          break a run.
+        </div>
+        <div id="fixtures" class="stack"></div>
+        <button class="btn btn-ghost" id="add-fixture" type="button">+ Add fixture</button>
+      </div>
+      <div class="group">
+        <button class="btn btn-primary" id="generate-submit" type="button">Run generation</button>
+        <div id="generate-result"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- --------------------------------------------------------------- admin -->
+<main class="view" id="view-admin" hidden>
+  <div class="view-head">
+    <div>
+      <h1 class="view-title">Admin</h1>
+      <div class="view-sub">Head only — these change what every sport may book.</div>
+    </div>
+  </div>
+
+  <div class="dash-grid">
+    <section class="panel">
+      <div class="panel-head"><h2 class="panel-title">Master sheet</h2></div>
+      <div class="panel-body">
         <div class="group">
-          <div class="group-label">Master sheet</div>
           <div class="hint">
             Bookings kept in the shared Google Sheet are mirrored here so the
-            conflict checks can see them. A sync changes what every sport may
-            book, so it is Head-only.
+            conflict checks can see them.
           </div>
           <div class="row2">
             <button class="btn btn-ghost" id="sheet-status" type="button">Check status</button>
@@ -262,9 +369,13 @@
           </div>
           <div id="sheet-result"></div>
         </div>
+      </div>
+    </section>
 
+    <section class="panel">
+      <div class="panel-head"><h2 class="panel-title">Academic terms</h2></div>
+      <div class="panel-body">
         <div class="group">
-          <div class="group-label">Academic terms</div>
           <div class="row2">
             <div class="field">
               <label for="term-label-input">Label</label>
@@ -282,9 +393,13 @@
           <button class="btn btn-ghost" id="term-submit" type="button">Create term</button>
           <div id="term-list" class="stack" style="margin-top:12px"></div>
         </div>
+      </div>
+    </section>
 
+    <section class="panel">
+      <div class="panel-head"><h2 class="panel-title">Hand over a role</h2></div>
+      <div class="panel-body">
         <div class="group">
-          <div class="group-label">Hand over a role</div>
           <div class="row2">
             <div class="field">
               <label for="nom-role">Role</label>
@@ -309,15 +424,14 @@
           <button class="btn btn-primary" id="nominate-submit" type="button">Nominate</button>
           <div id="succession-result"></div>
         </div>
-
-        <div class="group">
-          <div class="group-label">Assignment history</div>
-          <div id="assignment-history" class="stack"></div>
-        </div>
       </div>
-
     </section>
-  </aside>
+
+    <section class="panel">
+      <div class="panel-head"><h2 class="panel-title">Assignment history</h2></div>
+      <div class="panel-body stack" id="assignment-history"></div>
+    </section>
+  </div>
 </main>
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>

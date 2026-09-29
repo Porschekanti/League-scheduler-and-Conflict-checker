@@ -154,6 +154,35 @@ function localIso(d: Date): string {
          `T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
 }
 
+/** The browser's UTC offset, as `+05:30` / `-04:00`. */
+function utcOffset(): string {
+  const mins = -new Date().getTimezoneOffset();
+  const sign = mins >= 0 ? "+" : "-";
+  const abs = Math.abs(mins);
+  return `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
+/**
+ * Turn a `datetime-local` value into an unambiguous instant.
+ *
+ * This matters more than it looks. The page *shows* times in the viewer's own
+ * zone, but a datetime-local input hands back a bare `2026-10-08T23:30` with
+ * no zone at all — and the API reads a naive timestamp as UTC. So an organizer
+ * in +05:30 who typed the time they saw on screen had it stored five and a half
+ * hours away, and it silently failed to collide with the match already in that
+ * slot. A missed conflict that looks like a clean booking is the single worst
+ * failure this system can produce, and here the frontend was manufacturing one.
+ *
+ * Stamping the browser's offset on the way out makes what the user typed and
+ * what the engine compares the same moment.
+ */
+function toInstant(localValue: string): string {
+  if (!localValue) return localValue;
+  if (/[+-]\d{2}:\d{2}$|Z$/.test(localValue)) return localValue;   // already zoned
+  const withSeconds = localValue.length === 16 ? `${localValue}:00` : localValue;
+  return `${withSeconds}${utcOffset()}`;
+}
+
 /* -------------------------------------------------------------------- toast */
 
 function toast(title: string, body?: string, kind: "ok" | "bad" | "info" = "info"): void {
@@ -294,6 +323,7 @@ async function loadSchedule(): Promise<void> {
   }
   renderCalendar();
   renderDetail();
+  if (currentView() === "dashboard") renderDashboard();
 }
 
 function renderCalendar(): void {
@@ -355,6 +385,32 @@ function renderCalendar(): void {
 
   const used = firstDow + lastDate;
   for (let i = used; i % 7 !== 0; i++) grid.appendChild(el("div", "day is-empty"));
+
+  // An empty grid next to a "3 confirmed" badge looks like a failure rather
+  // than a quiet month. Point at the month that actually holds something.
+  const note = maybe("cal-note");
+  if (note) {
+    const shown = [...byDay.values()].reduce((n, l) => n + l.length, 0);
+    if (shown === 0 && state.matches.length) {
+      const nearest = [...state.matches]
+        .map(m => new Date(m.start_time))
+        .filter(d => !isNaN(d.getTime()))
+        .sort((a, b) => +a - +b)[0];
+      note.hidden = false;
+      clear(note);
+      note.appendChild(el("span", undefined,
+        `No matches this month — the first is in ${nearest.toLocaleDateString([], { month: "long", year: "numeric" })}.`));
+      const jump = el("button", "btn btn-ghost btn-sm", "Jump there") as HTMLButtonElement;
+      jump.type = "button";
+      jump.addEventListener("click", () => {
+        state.month = new Date(nearest.getFullYear(), nearest.getMonth(), 1);
+        renderCalendar();
+      });
+      note.appendChild(jump);
+    } else {
+      note.hidden = true;
+    }
+  }
 }
 
 function renderDetail(): void {
@@ -391,6 +447,190 @@ function renderDetail(): void {
   kv("Version", `v${m.version}`);
   card.appendChild(dl);
   host.appendChild(card);
+}
+
+/* ---------------------------------------------------------------- dashboard
+   Stat tiles rather than charts: a single number answering a single question
+   is a hero number, and wrapping it in a chart adds ink without meaning. The
+   numbers wear text tokens; a status dot may sit beside one, always with a
+   word next to it so identity is never colour alone. */
+
+function startOfDay(d: Date): Date {
+  const c = new Date(d);
+  c.setHours(0, 0, 0, 0);
+  return c;
+}
+
+function upcomingMatches(): Match[] {
+  const now = Date.now();
+  return state.matches
+    .filter(m => {
+      const t = new Date(m.start_time).getTime();
+      return !isNaN(t) && t >= now;
+    })
+    .sort((a, b) => +new Date(a.start_time) - +new Date(b.start_time));
+}
+
+function tile(label: string, value: string, footText?: string,
+              dot?: "ok" | "warn" | "idle"): HTMLElement {
+  const box = el("div", "tile");
+  box.appendChild(el("div", "tile-label", label));
+  box.appendChild(el("div", "tile-value", value));
+  if (footText) {
+    const foot = el("div", "tile-foot");
+    if (dot) foot.appendChild(el("span", `tile-dot ${dot}`));
+    foot.appendChild(el("span", undefined, footText));
+    box.appendChild(foot);
+  }
+  return box;
+}
+
+function renderDashboard(): void {
+  const tiles = maybe("tiles");
+  if (!tiles) return;
+
+  const upcoming = upcomingMatches();
+  const next = upcoming[0];
+  clear(tiles);
+
+  tiles.appendChild(tile(
+    "Confirmed matches", String(state.matches.length),
+    state.matches.length ? "published and public" : "nothing published yet",
+    state.matches.length ? "ok" : "idle",
+  ));
+
+  tiles.appendChild(tile(
+    "Upcoming", String(upcoming.length),
+    next ? `next ${fmtDay(next.start_time)} at ${fmtTime(next.start_time)}` : "none scheduled",
+    upcoming.length ? "ok" : "idle",
+  ));
+
+  tiles.appendChild(tile(
+    "Drafts awaiting publish", String(state.drafts.length),
+    state.drafts.length ? "holding venues and players" : "none pending",
+    state.drafts.length ? "warn" : "idle",
+  ));
+
+  tiles.appendChild(tile(
+    "Teams registered", String(state.teams.length),
+    `${new Set(state.teams.map(t => t.sport)).size} sport(s) this trimester`,
+  ));
+
+  renderNextUp(upcoming.slice(0, 6));
+  renderLoadStrip();
+
+  const sub = maybe("dash-sub");
+  if (sub) {
+    sub.textContent = state.session
+      ? `Signed in as ${state.session.role}${state.session.sportScope ? " · " + state.session.sportScope : ""}.`
+      : "The state of the schedule right now.";
+  }
+
+  const draftsPanel = maybe("dash-drafts");
+  if (draftsPanel) draftsPanel.hidden = !state.session;
+}
+
+function renderNextUp(matches: Match[]): void {
+  const host = maybe("next-up");
+  if (!host) return;
+  clear(host);
+
+  if (!matches.length) {
+    host.appendChild(emptyState("—", "Nothing coming up",
+      "Confirmed matches in the future appear here."));
+    return;
+  }
+
+  for (const m of matches) {
+    const row = el("div", "match-row");
+    const when = el("div", "match-when");
+    when.appendChild(document.createTextNode(fmtTime(m.start_time)));
+    when.appendChild(el("span", undefined, fmtDay(m.start_time)));
+    row.appendChild(when);
+
+    const mid = el("div");
+    mid.appendChild(el("div", "match-teams",
+      `${teamName(m.home_team_id)} vs ${teamName(m.away_team_id)}`));
+    mid.appendChild(el("div", "match-meta",
+      `${m.sport} · ${venueName(m.venue_id)} · ${durationMins(m.start_time, m.end_time)} min`));
+    row.appendChild(mid);
+
+    row.appendChild(el("span", "pill pill-live", "Confirmed"));
+    host.appendChild(row);
+  }
+}
+
+/** One bar per day for the coming week. Single series, single hue: magnitude
+    only, so no legend — the panel heading names it. */
+function renderLoadStrip(): void {
+  const strip = maybe("load-strip");
+  const axis = maybe("load-axis");
+  if (!strip || !axis) return;
+
+  const today = startOfDay(new Date());
+  const days: { date: Date; count: number }[] = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    days.push({ date: d, count: 0 });
+  }
+  for (const m of state.matches) {
+    const t = new Date(m.start_time);
+    if (isNaN(t.getTime())) continue;
+    const idx = Math.round((startOfDay(t).getTime() - today.getTime()) / 86400000);
+    if (idx >= 0 && idx < 7) days[idx].count++;
+  }
+
+  const total = days.reduce((n, d) => n + d.count, 0);
+  const peak = Math.max(1, ...days.map(d => d.count));
+  clear(strip);
+  clear(axis);
+
+  // A row of flat zero bars reads as a broken chart rather than a quiet week.
+  // Say so in words, and point at when things actually resume.
+  if (total === 0) {
+    const next = upcomingMatches()[0];
+    strip.style.display = "none";
+    axis.style.display = "none";
+    const host = strip.parentElement;
+    let note = maybe("load-empty");
+    if (!note && host) {
+      note = el("div", "empty");
+      note.id = "load-empty";
+      host.appendChild(note);
+    }
+    if (note) {
+      clear(note);
+      note.appendChild(el("div", "empty-mark", "—"));
+      note.appendChild(el("div", "empty-title", "Nothing in the next 7 days"));
+      note.appendChild(el("div", "empty-body", next
+        ? `The next confirmed match is ${fmtDay(next.start_time)} at ${fmtTime(next.start_time)}.`
+        : "No confirmed matches are scheduled at all."));
+    }
+    return;
+  }
+
+  strip.style.display = "";
+  axis.style.display = "";
+  maybe("load-empty")?.remove();
+
+  for (const day of days) {
+    const col = el("div", "load-col");
+    const bar = el("div", "load-bar");
+    if (day.count === 0) bar.classList.add("is-empty");
+    // Bars are laid out immediately; the height transition animates from 0.
+    bar.style.height = day.count === 0 ? "3px" : `${Math.round((day.count / peak) * 100)}%`;
+    const label = day.count === 1 ? "1 match" : `${day.count} matches`;
+    bar.title = `${day.date.toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" })} — ${label}`;
+    col.appendChild(bar);
+    strip.appendChild(col);
+
+    const tick = el("div", "load-day");
+    tick.appendChild(el("b", undefined, String(day.count)));
+    tick.appendChild(document.createTextNode(
+      day.date.toLocaleDateString([], { weekday: "short" })));
+    axis.appendChild(tick);
+  }
 }
 
 /* ----------------------------------------------------------- reference data */
@@ -506,6 +746,7 @@ async function signIn(button: HTMLButtonElement): Promise<void> {
   renderSession();
   fillSelects();
   loadPending();
+  renderDashboard();
   toast("Signed in",
     `${res.body.role}${res.body.sport_scope ? " · " + res.body.sport_scope : " · all sports"}`, "ok");
 }
@@ -515,22 +756,38 @@ function signOut(): void {
   state.drafts = [];
   renderDrafts();
   renderSession();
+  renderDashboard();
   toast("Signed out", undefined, "info");
 }
 
 function renderSession(): void {
   const s = state.session;
-  $("login-card").hidden = !!s;
-  $("organizer").hidden = !s;
+
   $("session-chip").hidden = !s;
-  $("admin-tab").hidden = !(s && s.role === "HEAD");
+  $("signin-nav").hidden = !!s;
+  $("dash-signin").hidden = !!s;
+  $("dash-drafts").hidden = !s;
   $("pending-card").hidden = true;
+
+  // Hick's Law: a destination you cannot reach is one you should not have to
+  // read past. The nav only renders what this session can actually open.
+  document.querySelectorAll<HTMLElement>(".nav-link").forEach(link => {
+    if (link.dataset.auth !== undefined) link.hidden = !s;
+    if (link.dataset.head !== undefined) link.hidden = !(s && s.role === "HEAD");
+  });
 
   if (s) {
     $("session-who").textContent = s.role;
     $("session-scope").textContent = s.sportScope ? s.sportScope : "all sports";
   }
-  if (!s && currentTab() === "admin") selectTab("book");
+
+  // Signing out of a view you can no longer see would leave a blank page.
+  const view = currentView();
+  const stillAllowed =
+    view === "dashboard" || view === "schedule" ||
+    (!!s && view !== "admin") ||
+    (!!s && s.role === "HEAD");
+  if (!stillAllowed) showView("dashboard");
 }
 
 /* ------------------------------------------------------------------ booking */
@@ -546,7 +803,7 @@ async function book(button: HTMLButtonElement): Promise<void> {
   const payload = {
     home_team_id: home, away_team_id: away,
     venue_id: Number(val("b-venue")), sport: val("b-sport"),
-    start_time: val("b-start"), end_time: val("b-end"),
+    start_time: toInstant(val("b-start")), end_time: toInstant(val("b-end")),
   };
 
   const res = await withBusy(button, () =>
@@ -569,8 +826,8 @@ async function book(button: HTMLButtonElement): Promise<void> {
   });
   renderDrafts();
   if (res.body.term) updateTermBadge(res.body.term, !!res.body.in_break);
-  toast("Draft created", `Filed under ${res.body.term}. Publish it from Drafts.`, "ok");
-  selectTab("drafts");
+  toast("Draft created", `Filed under ${res.body.term}. Publish it from the dashboard.`, "ok");
+  showView("dashboard");
 }
 
 function updateTermBadge(term: string, inBreak: boolean): void {
@@ -586,6 +843,8 @@ function updateTermBadge(term: string, inBreak: boolean): void {
 function renderDrafts(): void {
   const host = $("drafts");
   $("draft-count").textContent = String(state.drafts.length);
+  const panel = maybe("dash-drafts");
+  if (panel) panel.hidden = !state.session;
   clear(host);
 
   if (state.drafts.length === 0) {
@@ -717,7 +976,14 @@ async function loadRoster(): Promise<void> {
   const teamId = Number(sel.value);
   const res = await api<RosterEntry[]>(`/teams/${teamId}/roster`);
   clear(host);
-  if (!res.ok || !Array.isArray(res.body)) return;
+  const countPill = maybe("roster-count");
+  if (!res.ok || !Array.isArray(res.body)) {
+    if (countPill) countPill.textContent = "—";
+    return;
+  }
+  if (countPill) {
+    countPill.textContent = res.body.length === 1 ? "1 player" : `${res.body.length} players`;
+  }
 
   if (res.body.length === 0) {
     host.appendChild(el("div", "hint", `Nobody on ${teamName(teamId)} yet.`));
@@ -821,8 +1087,8 @@ function collectFixtures(): any[] {
     home_team_id: Number((row.querySelector(".fx-home") as HTMLSelectElement).value),
     away_team_id: Number((row.querySelector(".fx-away") as HTMLSelectElement).value),
     venue_id: Number((row.querySelector(".fx-venue") as HTMLSelectElement).value),
-    start_time: (row.querySelector(".fx-start") as HTMLInputElement).value,
-    end_time: (row.querySelector(".fx-end") as HTMLInputElement).value,
+    start_time: toInstant((row.querySelector(".fx-start") as HTMLInputElement).value),
+    end_time: toInstant((row.querySelector(".fx-end") as HTMLInputElement).value),
   }));
 }
 
@@ -1098,22 +1364,46 @@ async function revokeAssignment(id: number, button: HTMLButtonElement): Promise<
   loadSuccession();
 }
 
-/* --------------------------------------------------------------------- tabs */
+/* -------------------------------------------------------------------- views
+   The nav is the router. The pill that tracks the hovered link is pure CSS
+   (anchor positioning) — nothing here measures or moves it. What lives here is
+   selection, which is a different thing from hover: `aria-current` marks where
+   you are, and survives the pointer leaving the bar. */
 
-function currentTab(): string {
-  const active = document.querySelector<HTMLElement>(".tab[aria-selected='true']");
-  return active?.dataset.tab ?? "book";
+const VIEWS = ["dashboard", "schedule", "book", "roster", "generate", "admin"] as const;
+
+function currentView(): string {
+  const active = document.querySelector<HTMLElement>(".nav-link[aria-current='page']");
+  return active?.dataset.view ?? "dashboard";
 }
 
-function selectTab(name: string): void {
-  document.querySelectorAll<HTMLElement>(".tab").forEach(t => {
-    t.setAttribute("aria-selected", String(t.dataset.tab === name));
+function showView(name: string): void {
+  if (!VIEWS.includes(name as typeof VIEWS[number])) name = "dashboard";
+
+  document.querySelectorAll<HTMLElement>(".nav-link").forEach(link => {
+    if (link.dataset.view === name) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   });
-  document.querySelectorAll<HTMLElement>(".tabpanel").forEach(p => {
-    p.classList.toggle("is-active", p.dataset.panel === name);
-  });
+
+  for (const view of VIEWS) {
+    const el = maybe(`view-${view}`);
+    if (!el) continue;
+    const active = view === name;
+    el.hidden = !active;
+    if (active) {
+      el.classList.remove("is-entering");
+      void el.offsetWidth;                 // restart the entrance
+      el.classList.add("is-entering");
+    }
+  }
+
+  // Each view refreshes what it shows on entry, so nothing is ever stale.
+  if (name === "dashboard") renderDashboard();
   if (name === "admin") loadSuccession();
   if (name === "roster") loadRoster();
+  if (name === "schedule") { renderCalendar(); renderDetail(); }
+
+  window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
 }
 
 /* --------------------------------------------------------------------- wire */
@@ -1147,8 +1437,22 @@ function onClick(id: string, fn: (b: HTMLButtonElement) => void): void {
 }
 
 function init(): void {
-  document.querySelectorAll<HTMLElement>(".tab").forEach(tab => {
-    tab.addEventListener("click", () => selectTab(tab.dataset.tab!));
+  document.querySelectorAll<HTMLElement>(".nav-link").forEach(link => {
+    link.addEventListener("click", () => showView(link.dataset.view!));
+  });
+  document.querySelectorAll<HTMLElement>("[data-goto]").forEach(btn => {
+    btn.addEventListener("click", () => showView(btn.dataset.goto!));
+  });
+
+  // "Sign in" in the bar is a shortcut to the form, not a second form.
+  $("signin-nav").addEventListener("click", () => {
+    showView("dashboard");
+    ($("login-email") as HTMLInputElement).focus();
+  });
+  onClick("dash-refresh", async (b) => {
+    await withBusy(b, async () => { await loadReference(); await loadSchedule(); });
+    renderDashboard();
+    pop(b);
   });
 
   onClick("login-submit", signIn);
@@ -1194,7 +1498,8 @@ function init(): void {
   renderSession();
   renderDrafts();
   renderDetail();
-  loadReference().then(() => { addFixtureRow(); addFixtureRow(); });
+  renderDashboard();
+  loadReference().then(() => { addFixtureRow(); addFixtureRow(); renderDashboard(); });
   loadSchedule();
   setInterval(loadSchedule, 6000);
 }
