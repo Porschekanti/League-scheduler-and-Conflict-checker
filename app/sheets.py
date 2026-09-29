@@ -239,11 +239,23 @@ def sync_from_sheet(conn: sqlite3.Connection, sheet: MasterSheet | None = None) 
     returned under `rejected` rather than dropped quietly — a row the engine
     cannot read is a booking it cannot protect.
     """
-    # This function is also used by the offline importer and by maintenance
-    # scripts.  Those callers have already crossed the API/auth boundary (or
-    # are explicitly offline SYSTEM work), so make the database actor explicit
-    # for the duration of the mirror write.
+    # Also used by the offline importer and by maintenance scripts, which have
+    # either already crossed the API/auth boundary or are explicitly offline
+    # SYSTEM work — so the mirror write runs as SYSTEM. The actor is restored
+    # afterwards: this is called mid-request from POST /master-sheet/sync, and
+    # leaving the connection elevated would silently let every later statement
+    # in that request write as SYSTEM too.
+    previous = conn.execute(
+        "SELECT current_actor_role() AS role, current_actor_id() AS id"
+    ).fetchone()
     set_actor(conn, "SYSTEM")
+    try:
+        return _mirror_sheet(conn, sheet)
+    finally:
+        set_actor(conn, previous["role"], previous["id"])
+
+
+def _mirror_sheet(conn: sqlite3.Connection, sheet: MasterSheet | None) -> dict:
     sheet = sheet or get_master_sheet()
     pulled = sheet.pull()
     now = datetime.now(timezone.utc).isoformat()

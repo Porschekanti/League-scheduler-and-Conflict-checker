@@ -353,32 +353,53 @@ CREATE INDEX IF NOT EXISTS idx_external_booking_players_roll
     ON external_booking_players(roll_number);
 """
 
-# Populate the audit actor on rows written through an authenticated API
-# connection.  The RLS triggers above decide whether a write is permitted;
-# these AFTER triggers record who performed it without changing any handler's
-# SQL.  SYSTEM migrations intentionally leave the user columns NULL.
+# Populate the audit actor on rows written through an authenticated connection.
+# The RLS triggers above decide whether a write is permitted; these AFTER
+# triggers record who performed it without changing any handler's SQL.
+#
+# Each entry is table -> (primary key, audit "created" column or None). Two
+# names are in play because several tables already own a business `created_at`
+# with its own meaning — role_assignments records when the nomination was made,
+# team_members when the player joined, matches when the fixture was proposed.
+# Overwriting those with a row-write timestamp would destroy real information,
+# so those tables carry `created_at_audit` instead. The rule is: the audit
+# column is `created_at` unless that name is already taken, in which case it is
+# `created_at_audit`. `jobs` and `external_bookings` track only `updated_at`,
+# because their own `created_at`/`synced_at` already say when the row appeared.
 _AUDIT_TABLES = {
-    "users": "id",
-    "academic_terms": "id",
-    "role_assignments": "id",
-    "seasons": "id",
-    "players": "id",
-    "teams": "id",
-    "team_members": "id",
-    "venues": "id",
-    "jobs": "id",
-    "matches": "id",
-    "external_bookings": "id",
+    "users": ("id", "created_at"),
+    "academic_terms": ("id", "created_at"),
+    "role_assignments": ("id", "created_at_audit"),
+    "seasons": ("id", "created_at"),
+    "players": ("id", "created_at"),
+    "teams": ("id", "created_at"),
+    "team_members": ("id", "created_at_audit"),
+    "venues": ("id", "created_at"),
+    "jobs": ("id", None),
+    "matches": ("id", "created_at_audit"),
+    "external_bookings": ("id", None),
 }
 
-_AUDIT_TRIGGERS = "\n".join(
-    f"""CREATE TRIGGER IF NOT EXISTS audit_{table}_insert
+
+def _audit_insert_trigger(table: str, key: str, created_col: str | None) -> str:
+    # COALESCE rather than plain assignment: on a database created fresh the
+    # column already carries DEFAULT CURRENT_TIMESTAMP, but SQLite cannot ADD
+    # COLUMN ... NOT NULL DEFAULT CURRENT_TIMESTAMP to an existing table, so a
+    # migrated database has the column nullable with no default. Filling it
+    # here makes both kinds of database behave identically instead of leaving
+    # migrated rows with a NULL timestamp nobody notices.
+    stamps = [f"{created_col} = COALESCE({created_col}, CURRENT_TIMESTAMP)"] if created_col else []
+    stamps.append("updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)")
+    sets = ",\n           ".join(
+        ["created_by_user_id = current_actor_id()",
+         "updated_by_user_id = current_actor_id()"] + stamps
+    )
+    return f"""CREATE TRIGGER IF NOT EXISTS audit_{table}_insert
 AFTER INSERT ON {table}
 WHEN current_actor_id() IS NOT NULL
 BEGIN
     UPDATE {table}
-       SET created_by_user_id = current_actor_id(),
-           updated_by_user_id = current_actor_id()
+       SET {sets}
      WHERE {key} = NEW.{key};
 END;
 CREATE TRIGGER IF NOT EXISTS audit_{table}_update
@@ -391,7 +412,11 @@ BEGIN
            updated_at = CURRENT_TIMESTAMP
      WHERE {key} = NEW.{key};
 END;"""
-    for table, key in _AUDIT_TABLES.items()
+
+
+_AUDIT_TRIGGERS = "\n".join(
+    _audit_insert_trigger(table, key, created_col)
+    for table, (key, created_col) in _AUDIT_TABLES.items()
 )
 
 _AUDIT_TRIGGERS += """
@@ -426,8 +451,22 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+SYSTEM_ACTOR_ID = 0
+"""Audit id recorded for internal SYSTEM work (seed, migration, worker).
+
+The audit triggers only fire `WHEN current_actor_id() IS NOT NULL`, so a SYSTEM
+actor carrying no id left every worker- and migration-written row with
+created_by_user_id NULL — indistinguishable from a legacy row that predates
+auditing entirely. A reserved id makes system writes explicit. It is
+deliberately not a real `users` row, and the audit columns carry no foreign
+key, so nothing needs to exist for it.
+"""
+
+
 def set_actor(conn: sqlite3.Connection, role: str, user_id: int | None = None) -> None:
-    """Set the authenticated actor used by the SQLite RLS triggers."""
+    """Set the authenticated actor used by the SQLite RLS and audit triggers."""
+    if user_id is None and role == "SYSTEM":
+        user_id = SYSTEM_ACTOR_ID
     conn.execute("SELECT set_db_actor(?, ?)", (role, user_id))
 
 
@@ -447,21 +486,31 @@ def _add_audit_columns(conn: sqlite3.Connection) -> None:
         "external_bookings": ("created_by_user_id", "updated_by_user_id", "updated_at"),
         "external_booking_players": ("created_by_user_id",),
     }
+    # SQL identifiers cannot be bound as parameters, so these statements have to
+    # be built by interpolation — the one place in this codebase that is true.
+    # The names come from the literal dict above and never from a request, and
+    # this assertion keeps it that way if someone later makes `columns` dynamic.
+    for name in [*columns, *{c for cols in columns.values() for c in cols}]:
+        if not name.replace("_", "").isalnum():
+            raise ValueError(f"refusing to interpolate unsafe SQL identifier: {name!r}")
+
     for table, wanted in columns.items():
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         for column in wanted:
             if column in existing:
                 continue
+            # ADD COLUMN cannot carry NOT NULL DEFAULT CURRENT_TIMESTAMP in
+            # SQLite, so a migrated table ends up nullable where a fresh one is
+            # NOT NULL. The audit insert triggers COALESCE the timestamp in, so
+            # rows behave the same either way; only the declared constraint
+            # differs. See docs/database_schema.md.
             column_type = "INTEGER" if column.endswith("_user_id") else "TEXT"
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
-        # Nullable audit fields are intentionally safe for legacy rows. New
-        # rows receive timestamps through table defaults in the fresh schema.
-        if "created_at" in wanted and "created_at" not in existing:
-            conn.execute(f"UPDATE {table} SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL")
-        if "created_at_audit" in wanted and "created_at_audit" not in existing:
-            conn.execute(f"UPDATE {table} SET created_at_audit = CURRENT_TIMESTAMP WHERE created_at_audit IS NULL")
-        if "updated_at" in wanted and "updated_at" not in existing:
-            conn.execute(f"UPDATE {table} SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
+        for stamp in ("created_at", "created_at_audit", "updated_at"):
+            if stamp in wanted and stamp not in existing:
+                conn.execute(
+                    f"UPDATE {table} SET {stamp} = CURRENT_TIMESTAMP WHERE {stamp} IS NULL"
+                )
 
 
 def init_db() -> None:

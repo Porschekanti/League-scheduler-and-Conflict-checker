@@ -29,9 +29,68 @@ matched to `venues.name`; `start` and `end` are ISO-8601 timestamps; and
 
 ## Write protection
 
-SQLite does not implement PostgreSQL-style native RLS.  This project installs
-BEFORE INSERT/UPDATE/DELETE triggers on every scheduling table.  The triggers
-allow only an actor set by the authenticated FastAPI dependency (`HEAD` or
-`REP`) or the internal `SYSTEM` actor used by migrations and the worker.  A
-plain sqlite3 connection has no actor and is denied by default.  API routes
-still enforce sport scope, so a REP can only change rows for their sport.
+SQLite has no native row-level security. This project installs BEFORE
+INSERT/UPDATE/DELETE triggers on every scheduling table, which abort unless the
+connection's actor is `HEAD`, `REP` or `SYSTEM`. The actor is a per-connection
+value set by `app.db.set_actor` — by `get_current_user` for API requests, and
+explicitly by the worker, the seed script and the importers.
+
+### What this does and does not protect
+
+It is a **guardrail against accident, not a security boundary.** The
+distinction matters, because calling it "RLS" invites over-trust:
+
+| Scenario | Result | Verified |
+|---|---|---|
+| `sqlite3 scheduler.db` then `UPDATE`/`DELETE` | Aborted — `no such function: current_actor_role` | yes |
+| A script that opens the file and defines `current_actor_role()` itself | **Full write access** | yes |
+| Application code calling `set_db_actor('SYSTEM')` on its own connection | **Full write access** | yes |
+
+The function is registered per connection, so anyone who can open the database
+file can register their own and return whatever they like. This stops a
+careless script, a stray REPL, or someone poking at the file by hand. It does
+not stop anyone who wants in, and it is no substitute for file permissions.
+
+Real authorization lives in the API: `require_role` decides whether a role may
+perform an action at all, and `require_sport_scope` confines a REP to their own
+sport. The triggers cannot express sport scope — they only know a role string.
+
+### Audit columns
+
+The audit triggers fire `WHEN current_actor_id() IS NOT NULL`. Internal work
+uses the reserved id `SYSTEM_ACTOR_ID` (`0`), so seed, migration and worker
+writes are attributable instead of indistinguishable from rows predating the
+audit columns. `0` is not a real `users` row, and the audit columns carry no
+foreign key, so nothing needs to exist for it.
+
+Two column names are in play. The audit "created" column is `created_at`,
+except where a table already owns a business `created_at` with its own meaning
+— `role_assignments` (when the nomination was made), `team_members` (when the
+player joined), `matches` (when the fixture was proposed). Those carry
+`created_at_audit` instead, because overwriting the business value would
+destroy real information. `jobs` and `external_bookings` track only
+`updated_at`; their own `created_at`/`synced_at` already say when the row
+appeared.
+
+### Fresh versus migrated databases
+
+A database created fresh declares the timestamp columns `NOT NULL DEFAULT
+CURRENT_TIMESTAMP`. A database migrated by `init_db()` cannot: SQLite's
+`ALTER TABLE ... ADD COLUMN` rejects `NOT NULL DEFAULT CURRENT_TIMESTAMP`, so
+those columns are added nullable with no default. The declared constraints
+differ between the two.
+
+Row *behaviour* does not: the audit insert triggers `COALESCE` the timestamps
+in, so a row written to a migrated database gets the same values a fresh one
+would. Rows that existed before the migration keep `created_by_user_id` NULL,
+which is accurate — nobody recorded who wrote them.
+
+### Cost
+
+The triggers are not free. Every insert fires a follow-up `UPDATE` to backfill
+the actor columns, and every statement calls back into Python for
+`current_actor_role`/`current_actor_id`. Measured at roughly **4x a bare
+insert** (~1.1 ms versus ~0.3 ms for 300 rows) across 59 triggers. That is
+irrelevant at intramural scale, and worth revisiting only if `matches` grows
+large. Note a SQLite trigger in the main schema cannot read a `temp` table, so
+moving the actor out of a Python callback is not a small change.

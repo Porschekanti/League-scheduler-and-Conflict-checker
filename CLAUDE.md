@@ -411,4 +411,21 @@ solved problems:
 - `VIEWER` is in the role CHECK constraint but no endpoint requires it;
   `GET /schedules` is deliberately unauthenticated.
 - No rate limiting, no event-level audit log, no pagination on `GET /schedules`.
+- The write triggers are a guardrail, not a security boundary: anything that
+  can open the database file can register its own `current_actor_role()` and
+  write freely, and app code can call `set_db_actor('SYSTEM')` on its own
+  connection. Real authorization is `require_role` + `require_sport_scope` in
+  the API. `docs/database_schema.md` has the verified specifics.
+- The triggers cost roughly 4x a bare insert (every insert fires a follow-up
+  UPDATE, and every statement calls into Python). Fine at this scale. A main-
+  schema SQLite trigger cannot read a `temp` table, so moving the actor out of
+  a Python callback is not a small change.
+- Fresh and migrated databases differ in *declared* constraints on the audit
+  timestamps (`ALTER TABLE ADD COLUMN` cannot take `NOT NULL DEFAULT
+  CURRENT_TIMESTAMP`). Row behaviour is identical because the audit insert
+  triggers COALESCE the values in.
+- Accepting a role nomination is deliberately open to any authenticated user,
+  including a VIEWER. Gating it on HEAD/REP makes succession impossible, since
+  the whole point is promoting somebody who holds no role yet and `revoke`
+  demotes to VIEWER. Authorization there is ownership, not role.
 - No test framework — `smoke_test.py` is a linear script of `assert`s.
