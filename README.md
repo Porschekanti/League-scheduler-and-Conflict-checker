@@ -19,6 +19,15 @@ python presentation_seed.py --database presentation.db
 uvicorn app.main:app --reload
 ```
 
+For the complete deterministic MVP dataset and the exact browser/API demo
+sequence, see [`docs/DEMO_GUIDE.md`](docs/DEMO_GUIDE.md). It includes seeded
+accounts, rosters, role succession, external master-sheet bookings, conflict
+scenarios, drafts, and async generation.
+
+When using the demo, run `presentation_seed.py` before starting the backend.
+The smaller `seed.py` is for backend development and does not create confirmed
+fixtures for the public calendar.
+
 Server runs at `http://localhost:8000`. Interactive docs at
 `http://localhost:8000/docs`.
 
