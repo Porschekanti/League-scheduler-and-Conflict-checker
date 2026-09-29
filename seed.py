@@ -1,12 +1,13 @@
 """Run once after init: python seed.py"""
 from datetime import date
 
-from app.db import get_connection, init_db
+from app.db import get_connection, init_db, set_actor
 from app.security import hash_password
 from app.trimesters import resolve_season, resolve_term
 
 init_db()
 conn = get_connection()
+set_actor(conn, "SYSTEM")
 
 conn.execute(
     "INSERT INTO users (name, email, password_hash, role, sport_scope) VALUES (?, ?, ?, ?, ?)",

@@ -2,10 +2,10 @@ fastapi>=0.115
 uvicorn>=0.30
 pyjwt>=2.9
 
-# Starlette's TestClient imports `httpx`, so the test scripts need this one
-# specifically. An earlier revision listed `httpx2`, which is a different
-# package and left the test scripts unable to run on a fresh clone.
-httpx>=0.28
+# Starlette 1.x imports the compatibility fork explicitly. Keeping it in the
+# required set makes the checked-in smoke/regression scripts work on a fresh
+# clone with the current FastAPI stack.
+httpx2>=2.13
 
 # Optional: only needed for MASTER_SHEET_BACKEND=google. The CSV backend and
 # every test work without it, so it stays out of the required set.

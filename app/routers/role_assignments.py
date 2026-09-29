@@ -83,40 +83,48 @@ def pending_for_me(conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row
 
 
 @router.post("/role-assignments/{assignment_id}/accept", response_model=AcceptResponse)
-def accept_assignment(assignment_id: int, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(get_current_user)):
+def accept_assignment(assignment_id: int, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD", "REP"))):
     conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute("SELECT * FROM role_assignments WHERE id = ?", (assignment_id,)).fetchone()
-    if row is None:
-        conn.rollback(); raise HTTPException(status.HTTP_404_NOT_FOUND, "Assignment not found")
-    if row["nominated_user_id"] != user["id"]:
-        conn.rollback(); raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the nominee can accept this assignment")
-    if row["status"] != "PENDING":
-        conn.rollback(); raise HTTPException(status.HTTP_409_CONFLICT, "Assignment is no longer pending")
-    conn.execute("UPDATE role_assignments SET status = 'ACCEPTED', accepted_at = ? WHERE id = ?", (_now(), assignment_id))
-    conn.execute("UPDATE users SET role = ?, sport_scope = ? WHERE id = ?", (row["role"], row["sport_scope"], user["id"]))
-    conn.commit()
+    try:
+        row = conn.execute("SELECT * FROM role_assignments WHERE id = ?", (assignment_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Assignment not found")
+        if row["nominated_user_id"] != user["id"]:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the nominee can accept this assignment")
+        if row["status"] != "PENDING":
+            raise HTTPException(status.HTTP_409_CONFLICT, "Assignment is no longer pending")
+        conn.execute("UPDATE role_assignments SET status = 'ACCEPTED', accepted_at = ? WHERE id = ?", (_now(), assignment_id))
+        conn.execute("UPDATE users SET role = ?, sport_scope = ? WHERE id = ?", (row["role"], row["sport_scope"], user["id"]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {"id": assignment_id, "status": "ACCEPTED", "role": row["role"], "sport_scope": row["sport_scope"]}
 
 
 @router.post("/role-assignments/{assignment_id}/revoke")
 def revoke_assignment(assignment_id: int, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD"))):
     conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute("SELECT * FROM role_assignments WHERE id = ?", (assignment_id,)).fetchone()
-    if row is None:
-        conn.rollback(); raise HTTPException(status.HTTP_404_NOT_FOUND, "Assignment not found")
-    if row["status"] != "ACCEPTED":
-        conn.rollback(); raise HTTPException(status.HTTP_409_CONFLICT, "Only accepted assignments can be revoked")
-    conn.execute("UPDATE role_assignments SET status = 'REVOKED' WHERE id = ?", (assignment_id,))
-    conn.execute("UPDATE users SET role = 'VIEWER', sport_scope = NULL WHERE id = ?", (row["nominated_user_id"],))
-    previous = conn.execute("""SELECT nominated_user_id FROM role_assignments
-        WHERE role = ? AND (sport_scope IS ? OR sport_scope = ?) AND status = 'ACCEPTED' AND id != ?
-        ORDER BY accepted_at DESC, id DESC LIMIT 1""", (row["role"], row["sport_scope"], row["sport_scope"], assignment_id)).fetchone()
-    if previous:
-        conn.execute("UPDATE users SET role = ?, sport_scope = ? WHERE id = ?", (row["role"], row["sport_scope"], previous["nominated_user_id"]))
-        fallback = previous["nominated_user_id"]
-    else:
-        fallback = None
-    conn.commit()
+    try:
+        row = conn.execute("SELECT * FROM role_assignments WHERE id = ?", (assignment_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Assignment not found")
+        if row["status"] != "ACCEPTED":
+            raise HTTPException(status.HTTP_409_CONFLICT, "Only accepted assignments can be revoked")
+        conn.execute("UPDATE role_assignments SET status = 'REVOKED' WHERE id = ?", (assignment_id,))
+        conn.execute("UPDATE users SET role = 'VIEWER', sport_scope = NULL WHERE id = ?", (row["nominated_user_id"],))
+        previous = conn.execute("""SELECT nominated_user_id FROM role_assignments
+            WHERE role = ? AND (sport_scope IS ? OR sport_scope = ?) AND status = 'ACCEPTED' AND id != ?
+            ORDER BY accepted_at DESC, id DESC LIMIT 1""", (row["role"], row["sport_scope"], row["sport_scope"], assignment_id)).fetchone()
+        if previous:
+            conn.execute("UPDATE users SET role = ?, sport_scope = ? WHERE id = ?", (row["role"], row["sport_scope"], previous["nominated_user_id"]))
+            fallback = previous["nominated_user_id"]
+        else:
+            fallback = None
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {"id": assignment_id, "status": "REVOKED", "fallback_user_id": fallback}
 
 

@@ -7,7 +7,11 @@ import jwt
 
 # In a real deployment this comes from an environment variable, never a
 # hardcoded literal. Kept simple here since this is a course project.
-JWT_SECRET = os.environ.get("SCHEDULER_JWT_SECRET", "dev-secret-change-me")
+# Long enough for HS256 in local development; deployments should still set a
+# unique secret through the environment.
+JWT_SECRET = os.environ.get(
+    "SCHEDULER_JWT_SECRET", "dev-secret-change-me-please-set-env"
+)
 JWT_ALGO = "HS256"
 TOKEN_TTL_SECONDS = 60 * 60 * 8  # 8 hours
 

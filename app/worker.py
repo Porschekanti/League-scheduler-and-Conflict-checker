@@ -26,12 +26,13 @@ from app.conflicts import (
     parse_instant,
     validate_match,
 )
-from app.db import get_connection
+from app.db import get_connection, set_actor
 from app.trimesters import resolve_season
 
 
 def run_job(job_id: int) -> None:
     conn = get_connection()
+    set_actor(conn, "SYSTEM")
     try:
         conn.execute(
             "UPDATE jobs SET status = 'RUNNING' WHERE id = ?", (job_id,)
