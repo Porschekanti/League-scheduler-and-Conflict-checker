@@ -322,6 +322,9 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script type="module" src="app.js"></script>
+<!-- app.js has no imports; a classic script also works when this file is
+     opened directly from disk, where module scripts are commonly blocked by
+     browser file-origin rules. -->
+<script src="app.js" defer></script>
 </body>
 </html>
