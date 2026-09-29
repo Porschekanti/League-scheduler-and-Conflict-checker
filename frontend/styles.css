@@ -61,6 +61,12 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` has to win. The UA rule is [hidden]{display:none}, which any author
+   rule that sets `display` on a class beats — .term-badge{display:inline-flex}
+   silently left a stray empty chip in the app bar. Anything toggled with
+   el.hidden needs this to actually disappear. */
+[hidden] { display: none !important; }
+
 html, body { height: 100%; }
 
 body {
@@ -608,6 +614,13 @@ select { cursor: pointer; appearance: none;
   z-index: 90;
   display: flex; flex-direction: column; gap: 9px;
   max-width: min(380px, calc(100vw - 36px));
+  /* Never cover the rail's primary button: toasts are confirmations, and a
+     confirmation that hides the next action is worse than no confirmation. */
+  pointer-events: none;
+}
+.toast { pointer-events: auto; }
+@media (min-width: 1041px) {
+  .toasts { right: calc(400px + 34px); }
 }
 .toast {
   display: flex; align-items: flex-start; gap: 10px;

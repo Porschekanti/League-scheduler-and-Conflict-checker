@@ -800,9 +800,9 @@ function addFixtureRow()       {
     const field = el("div", "field");
     field.appendChild(el("label", undefined, label));
     const input = el("input", cls)                    ;
-    input.type = "text";
-    input.spellcheck = false;
-    input.value = value;
+    input.type = "datetime-local";
+    input.step = "60";
+    input.value = value.slice(0, 16);   // datetime-local wants minute precision
     field.appendChild(input);
     return field;
   };
@@ -1124,8 +1124,9 @@ function defaultTimes()       {
   const start = new Date();
   start.setDate(start.getDate() + 1);
   start.setHours(18, 0, 0, 0);
-  ($("b-start")                    ).value = localIso(start);
-  ($("b-end")                    ).value = localIso(new Date(start.getTime() + 60 * 60000));
+  // datetime-local only accepts minute precision; the API normalizes either way.
+  ($("b-start")                    ).value = localIso(start).slice(0, 16);
+  ($("b-end")                    ).value = localIso(new Date(start.getTime() + 60 * 60000)).slice(0, 16);
 }
 
 /** Keep the end an hour after the start until the user says otherwise. */
@@ -1138,7 +1139,7 @@ function bindTimeCoupling()       {
     if (touched) return;
     const d = new Date(start.value);
     if (isNaN(d.getTime())) return;
-    end.value = localIso(new Date(d.getTime() + 60 * 60000));
+    end.value = localIso(new Date(d.getTime() + 60 * 60000)).slice(0, 16);
   });
 }
 
