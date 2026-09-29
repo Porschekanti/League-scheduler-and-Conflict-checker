@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
+from app.db import set_actor
 from app.deps import get_db, get_current_user, require_role
 
 router = APIRouter(tags=["role assignments"])
@@ -83,7 +84,15 @@ def pending_for_me(conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row
 
 
 @router.post("/role-assignments/{assignment_id}/accept", response_model=AcceptResponse)
-def accept_assignment(assignment_id: int, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(require_role("HEAD", "REP"))):
+def accept_assignment(assignment_id: int, conn: sqlite3.Connection = Depends(get_db), user: sqlite3.Row = Depends(get_current_user)):
+    """Accepting is open to any authenticated user, on purpose.
+
+    The whole point of succession is promoting somebody who does not hold a
+    role yet, and `revoke` demotes its target to VIEWER — so gating this on
+    HEAD/REP makes incoming staff unable to accept and demotions permanent.
+    Authorization here is ownership, not role: only the named nominee may
+    accept, which the check below enforces.
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute("SELECT * FROM role_assignments WHERE id = ?", (assignment_id,)).fetchone()
@@ -93,12 +102,19 @@ def accept_assignment(assignment_id: int, conn: sqlite3.Connection = Depends(get
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the nominee can accept this assignment")
         if row["status"] != "PENDING":
             raise HTTPException(status.HTTP_409_CONFLICT, "Assignment is no longer pending")
+        # The write triggers only admit HEAD/REP/SYSTEM, and a nominee may well
+        # still be a VIEWER at this moment. This promotion was already
+        # authorized when a HEAD created the nomination, so the row change is
+        # SYSTEM work rather than the nominee acting with rights they lack.
+        set_actor(conn, "SYSTEM")
         conn.execute("UPDATE role_assignments SET status = 'ACCEPTED', accepted_at = ? WHERE id = ?", (_now(), assignment_id))
         conn.execute("UPDATE users SET role = ?, sport_scope = ? WHERE id = ?", (row["role"], row["sport_scope"], user["id"]))
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+    finally:
+        set_actor(conn, user["role"], user["id"])
     return {"id": assignment_id, "status": "ACCEPTED", "role": row["role"], "sport_scope": row["sport_scope"]}
 
 

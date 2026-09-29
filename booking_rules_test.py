@@ -233,5 +233,38 @@ except SheetUnavailable:
 finally:
     os.environ.pop("MASTER_SHEET_BACKEND", None)
 
+print("\n=== Succession: somebody with no role yet can be promoted ===")
+# The point of succession is promoting people who do NOT hold a role, and
+# revoke() demotes its target to VIEWER. Gating accept on HEAD/REP therefore
+# makes incoming staff unable to accept and demotions permanent.
+from app.security import hash_password  # noqa: E402
+
+conn = get_connection()
+conn.execute("SELECT set_db_actor('SYSTEM', NULL)")
+conn.execute(
+    "INSERT INTO users (name, email, password_hash, role, sport_scope) "
+    "VALUES (?, ?, ?, 'VIEWER', NULL)",
+    ("Incoming Rep", "incoming@example.edu", hash_password("pw")),
+)
+conn.commit()
+newbie = conn.execute("SELECT id FROM users WHERE email = 'incoming@example.edu'").fetchone()["id"]
+term_id = conn.execute("SELECT id FROM academic_terms LIMIT 1").fetchone()["id"]
 conn.close()
+
+r = client.post("/role-assignments/nominate", headers=HEAD, json={
+    "role": "REP", "sport_scope": "Basketball",
+    "term_id": term_id, "nominee_user_id": newbie})
+check("a HEAD can nominate a user who holds no role", r.status_code == 201, r.text)
+assignment_id = r.json()["id"]
+
+NEWBIE = {"Authorization": f"Bearer {login('incoming@example.edu', 'pw')}"}
+r = client.post(f"/role-assignments/{assignment_id}/accept", headers=NEWBIE)
+check("and that user can accept it, becoming a REP", r.status_code == 200, r.text)
+check("the promotion actually took effect",
+      r.json()["role"] == "REP" and r.json()["sport_scope"] == "Basketball", r.text)
+
+r = client.post(f"/role-assignments/{assignment_id}/accept", headers=NEWBIE)
+check("accepting twice is refused", r.status_code == 409, r.text)
+
+conn.close() if False else None
 print(f"\n\n=== ALL {len(PASSED)} BOOKING-RULE CHECKS PASSED ===")
