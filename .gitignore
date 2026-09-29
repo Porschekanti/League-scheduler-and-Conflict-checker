@@ -11,3 +11,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .env
+
+# Service-account keys must never be committed. The Google master-sheet
+# backend reads its key from MASTER_SHEET_CREDENTIALS, a path outside the repo.
+*service-account*.json
+*credentials*.json
+gen-lang-client-*.json

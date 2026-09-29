@@ -22,6 +22,11 @@ available at request time.
 | `external_bookings` | `id`, `source`, `external_ref`, `venue_id`, `venue_name`, `start_time`, `end_time`, `description`, `synced_at`, audit columns | Local mirror of a master-sheet booking. |
 | `external_booking_players` | `booking_id`, `roll_number`, audit column | Students committed by an external booking. |
 
+The Google backend needs the sheet shared with the service account's
+`client_email`. Viewer is enough to mirror bookings for conflict checks; Editor
+is only needed to push confirmed matches back, and pairs with leaving
+`MASTER_SHEET_READONLY` unset.
+
 The required CSV columns are `ref`, `venue`, `start`, `end`,
 `description`, and `players`. `ref` is the stable row identity; `venue` is
 matched to `venues.name`; `start` and `end` are ISO-8601 timestamps; and

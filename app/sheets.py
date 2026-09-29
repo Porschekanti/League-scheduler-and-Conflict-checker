@@ -150,17 +150,29 @@ class GoogleMasterSheet(MasterSheet):
 
     Deliberately imports gspread lazily: the dependency is optional, and the
     rest of the system must run without it.
+
+    Viewer access on the sheet is enough for conflict checking, which is the
+    point of the mirror. Set MASTER_SHEET_READONLY=1 when that is all you have:
+    the client then asks for the read-only scope and stops pretending it can
+    push, so a publish reports `pushed_to_master_sheet: false` honestly rather
+    than attempting a write that will always 403.
     """
 
-    writable = True
+    READ_SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ]
 
-    def __init__(self, sheet_id: str, credentials_path: str, tab: str = "Bookings"):
+    def __init__(self, sheet_id: str, credentials_path: str, tab: str = "Bookings",
+                 read_only: bool = False):
         self.sheet_id = sheet_id
         self.credentials_path = credentials_path
         self.tab = tab
+        self.read_only = read_only
+        self.writable = not read_only
         self.name = f"google:{sheet_id}"
 
-    def _worksheet(self):
+    def _client(self):
         try:
             import gspread
         except ImportError as exc:
@@ -171,14 +183,49 @@ class GoogleMasterSheet(MasterSheet):
             raise SheetUnavailable(
                 f"service-account key not found: {self.credentials_path}"
             )
+        if self.read_only:
+            return gspread.service_account(
+                filename=self.credentials_path, scopes=self.READ_SCOPES
+            )
+        return gspread.service_account(filename=self.credentials_path)
+
+    def _describe_failure(self, exc: Exception) -> str:
+        """Say what actually went wrong.
+
+        gspread raises PermissionError and WorksheetNotFound with empty
+        messages, which produced 'could not open sheet ...: .' — a dead end
+        that also told you to share as Editor when Viewer is enough to read.
+        """
+        import json
+        with open(self.credentials_path) as fh:
+            account = json.load(fh).get("client_email", "the service account")
+
+        name = type(exc).__name__
+        if name in ("PermissionError", "APIError") and "not found" not in str(exc).lower():
+            return (
+                f"Google returned 403 for sheet {self.sheet_id}. The key authenticates "
+                f"fine, so the sheet has not been shared with {account}. "
+                f"Open the sheet, press Share, paste that address, and pick Viewer "
+                f"(enough for conflict checks) or Editor (needed to push bookings back)."
+            )
+        if name in ("WorksheetNotFound",):
+            return (
+                f"Sheet {self.sheet_id} opened, but it has no tab named '{self.tab}'. "
+                f"Set MASTER_SHEET_TAB to the tab holding the bookings."
+            )
+        if name == "SpreadsheetNotFound":
+            return (
+                f"No spreadsheet with id {self.sheet_id}. Check MASTER_SHEET_ID — it is "
+                f"the long token between /d/ and /edit in the sheet URL."
+            )
+        return f"could not open sheet {self.sheet_id} tab '{self.tab}': {name}: {exc}"
+
+    def _worksheet(self):
+        client = self._client()
         try:
-            client = gspread.service_account(filename=self.credentials_path)
             return client.open_by_key(self.sheet_id).worksheet(self.tab)
         except Exception as exc:  # noqa: BLE001 - any failure here means unusable
-            raise SheetUnavailable(
-                f"could not open sheet {self.sheet_id} tab '{self.tab}': {exc}. "
-                "Share the sheet with the service account's client_email as Editor."
-            ) from exc
+            raise SheetUnavailable(self._describe_failure(exc)) from exc
 
     def pull(self) -> list[ExternalBooking]:
         return [
@@ -195,6 +242,11 @@ class GoogleMasterSheet(MasterSheet):
         ]
 
     def push(self, booking: ExternalBooking) -> None:
+        if self.read_only:
+            raise SheetUnavailable(
+                "MASTER_SHEET_READONLY is set: this sheet is mirrored one-way, "
+                "so bookings made here are not written back."
+            )
         self._worksheet().append_row(
             [
                 booking.external_ref,
@@ -226,7 +278,10 @@ def get_master_sheet() -> MasterSheet:
                 "MASTER_SHEET_CREDENTIALS"
             )
         return GoogleMasterSheet(
-            sheet_id, creds, os.environ.get("MASTER_SHEET_TAB", "Bookings")
+            sheet_id, creds,
+            os.environ.get("MASTER_SHEET_TAB", "Bookings"),
+            read_only=os.environ.get("MASTER_SHEET_READONLY", "").strip().lower()
+            in ("1", "true", "yes"),
         )
     raise SheetUnavailable(f"unknown MASTER_SHEET_BACKEND: {backend!r}")
 

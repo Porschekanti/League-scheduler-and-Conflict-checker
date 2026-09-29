@@ -299,7 +299,14 @@ MASTER_SHEET_CSV=/path/to/master.csv   # csv backend
 MASTER_SHEET_ID=<spreadsheet id>       # google backend
 MASTER_SHEET_TAB=Bookings
 MASTER_SHEET_CREDENTIALS=/path/to/service-account.json
+MASTER_SHEET_READONLY=1                # Viewer-only access to the sheet
 ```
+
+`MASTER_SHEET_READONLY=1` is the right setting when the service account has
+only **Viewer** on the sheet, which is all conflict checking needs. The client
+then requests the read-only scope and refuses to push, so a publish reports
+`pushed_to_master_sheet: false` honestly instead of attempting a write that is
+guaranteed to 403.
 
 Sheet columns: `ref,venue,start,end,description,players` — `ref` is the row's
 stable identity (sync upserts on it and deletes rows that vanish), `venue`
