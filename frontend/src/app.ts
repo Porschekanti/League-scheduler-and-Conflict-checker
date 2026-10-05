@@ -446,7 +446,76 @@ function renderDetail(): void {
   kv("Match id", `#${m.id}`);
   kv("Version", `v${m.version}`);
   card.appendChild(dl);
+
+  // Cancelling a published match is the one destructive thing an organizer can
+  // do from here: it disappears from every viewer's calendar and frees the
+  // venue and players immediately. The endpoint already existed and only the
+  // drafts list ever reached it, so a confirmed match could not be called off
+  // without going to the API by hand.
+  const canCancel = !!state.session && m.status !== "CANCELLED" &&
+    (state.session.role === "HEAD" || state.session.sportScope === m.sport);
+
+  if (canCancel) {
+    const actions = el("div", "detail-actions");
+    const why = el("div", "hint",
+      "Cancelling removes it from the public schedule and releases its venue and players.");
+    const cancel = el("button", "btn btn-ghost danger", "Cancel this match") as HTMLButtonElement;
+    cancel.type = "button";
+    cancel.addEventListener("click", () => confirmCancelMatch(m, cancel, actions));
+    actions.appendChild(why);
+    actions.appendChild(cancel);
+    card.appendChild(actions);
+  } else if (state.session && m.status !== "CANCELLED") {
+    card.appendChild(el("div", "hint",
+      `Only the ${m.sport} rep or the Sports Head can cancel this match.`));
+  }
+
   host.appendChild(card);
+}
+
+/** Two steps, because this one cannot be undone from the UI. */
+function confirmCancelMatch(m: Match, trigger: HTMLButtonElement, host: HTMLElement): void {
+  trigger.hidden = true;
+  const box = el("div", "confirm-strip");
+  box.appendChild(el("div", "confirm-q",
+    `Cancel ${teamName(m.home_team_id)} vs ${teamName(m.away_team_id)}?`));
+
+  const row = el("div", "confirm-actions");
+  const keep = el("button", "btn btn-ghost btn-sm", "Keep it") as HTMLButtonElement;
+  keep.type = "button";
+  keep.addEventListener("click", () => { box.remove(); trigger.hidden = false; });
+
+  const yes = el("button", "btn btn-ghost btn-sm danger", "Yes, cancel") as HTMLButtonElement;
+  yes.type = "button";
+  yes.addEventListener("click", () => cancelMatch(m, yes));
+
+  row.appendChild(keep);
+  row.appendChild(yes);
+  box.appendChild(row);
+  host.appendChild(box);
+}
+
+async function cancelMatch(m: Match, button: HTMLButtonElement): Promise<void> {
+  const res = await withBusy(button, () =>
+    api<any>(`/schedules/${m.id}/cancel`, {
+      method: "POST", body: JSON.stringify({ expected_version: m.version }),
+    }));
+
+  if (!res.ok) {
+    // A version mismatch means somebody else changed it while this was open —
+    // reload rather than leave a stale version on screen.
+    toast("Not cancelled", errorText(res.body), "bad");
+    await loadSchedule();
+    return;
+  }
+
+  pop(button);
+  toast("Match cancelled",
+    `#${m.id} is off the public schedule; its venue and players are free.`, "ok");
+  state.selected = null;
+  await loadSchedule();
+  renderDetail();
+  renderDashboard();
 }
 
 /* ---------------------------------------------------------------- dashboard

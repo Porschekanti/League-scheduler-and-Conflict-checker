@@ -1,0 +1,145 @@
+Intramural Scheduler — edge case run
+started   : 2026-10-06T00-14-45
+python    : 3.12.4
+database  : scheduler.db
+blackout  : 90 min
+utc offset: 0 min
+
+
+=== Timestamp parsing: formats that must be understood ================
+  PASS     ISO with Z parses
+  PASS     ISO with +05:30 parses
+  PASS     ISO with -04:00 parses
+  PASS     space separator parses
+  PASS     minute precision parses
+  PASS     microseconds parses
+
+=== Timestamp parsing: nonsense that must be refused ==================
+  PASS     empty string is refused
+  PASS     whitespace only is refused
+  PASS     plain words is refused
+  PASS     date only is refused
+  PASS     month 13 is refused
+  PASS     day 32 is refused
+  PASS     hour 25 is refused
+  PASS     Feb 30 is refused
+
+=== Interval sanity ===================================================
+  PASS     reversed interval refused
+  PASS     zero-length interval refused
+
+=== Equivalent instants in different notations compare equal ==========
+  PASS     2027-03-01T18:00:00Z  ==  2027-03-01T23:30:00+05:30
+  PASS     2027-03-01T18:00:00+00:00  ==  2027-03-01 18:00:00
+  PASS     2027-03-01T18:00  ==  2027-03-01T18:00:00
+
+=== Trimester boundaries, including the awkward ones ==================
+  PASS     2026-07-01 -> 2026-27 T1
+  PASS     2026-09-24 -> 2026-27 T1
+  PASS     2026-09-25 -> 2026-27 T1 (break)
+  PASS     2026-09-30 -> 2026-27 T1 (break)
+  PASS     2026-10-01 -> 2026-27 T2
+  PASS     2026-12-24 -> 2026-27 T2
+  PASS     2026-12-25 -> 2026-27 T2 (break)
+  PASS     2026-12-31 -> 2026-27 T2 (break)
+  PASS     2027-01-01 -> 2026-27 T2 (break)
+  PASS     2027-01-07 -> 2026-27 T2 (break)
+  PASS     2027-01-08 -> 2026-27 T3
+  PASS     2027-04-21 -> 2026-27 T3
+  PASS     2027-04-22 -> 2026-27 T3 (break)
+  PASS     2027-06-30 -> 2026-27 T3 (break)
+  PASS     2027-07-01 -> 2027-28 T1
+  PASS     2028-02-29 -> 2027-28 T3
+
+=== Malformed bookings are refused, never silently accepted ===========
+  PASS     team plays itself -> 4xx
+  PASS     nonexistent home team -> 4xx
+  PASS     nonexistent away team -> 4xx
+  PASS     nonexistent venue -> 4xx
+  PASS     negative team id -> 4xx
+  PASS     zero venue id -> 4xx
+  PASS     teams from different sports -> 4xx
+  PASS     garbage times -> 4xx
+  PASS     reversed times -> 4xx
+  PASS     zero-length match -> 4xx
+  PASS     empty sport -> 4xx
+
+=== Odd but legal bookings are accepted ===============================
+  PASS     a match spanning midnight
+  PASS     a 24-hour match
+  PASS     a match on a leap day
+
+=== Hostile strings are stored as data, not executed ==================
+  PASS     SQL-injection-shaped team name is accepted as a literal
+  PASS     the matches table still exists afterwards
+  PASS     and the name round-trips byte for byte
+  PASS     unicode team name accepted
+  PASS     a 5000-character name does not 500
+
+=== Authentication ====================================================
+  PASS     no token -> 401
+  PASS     malformed token -> 401
+  PASS     missing 'Bearer' prefix -> 401
+  PASS     expired token -> 401
+  PASS     token signed with the wrong secret -> 401
+  PASS     token for a user who no longer exists -> 401
+  PASS     wrong password -> 401
+  PASS     unknown user gives the SAME error as a wrong password
+
+=== Role and sport scope ==============================================
+  PASS     cricket rep cannot book Basketball -> 403
+  PASS     basketball rep cannot smuggle Cricket teams in under its own sport label
+  PASS     a VIEWER cannot book -> 403
+  PASS     a REP cannot run a master-sheet sync -> 403
+
+=== Cancelling bookings ===============================================
+  PASS     set-up booking created
+  PASS     published to CONFIRMED
+  PASS     the slot is genuinely held while confirmed
+  PASS     cancel with a stale version -> 409
+  PASS     cancel a match that does not exist -> 404
+  PASS     cancel outside your sport scope -> 403
+  PASS     a VIEWER cannot cancel -> 403
+  PASS     the owning role CAN cancel a confirmed match
+  PASS     cancelling twice -> 409
+  PASS     a cancelled match leaves the public schedule
+  PASS     and its venue slot is immediately bookable again
+
+=== A cancelled match stops holding its players, including for rest ===
+  PASS     a match holding the player exists
+  PASS     a match 30 min later is blocked by the rest rule
+  PASS     after cancelling, the same booking is allowed
+
+=== Blackout boundary (90 min), to the minute =========================
+  PASS     anchor match booked
+  PASS     89 min of rest -> refused
+  PASS     90 min of rest -> allowed
+  PASS     91 min of rest -> allowed
+  PASS     too little rest BEFORE an existing match is refused too
+
+=== Concurrency =======================================================
+  PASS     8 concurrent publishes of one draft -> exactly 1 success (got 1)
+  PASS     6 concurrent cancels -> exactly 1 success (got 1)
+  PASS     10 concurrent bookings of one free slot -> exactly 1 created (got 1)
+
+=== Generation jobs ===================================================
+  PASS     an empty fixture list is accepted and completes
+  PASS     empty job reaches COMPLETED, not FAILED
+  PASS     polling a job that does not exist -> 404
+  PASS     job status requires authentication
+
+=== Roster rules ======================================================
+  PASS     player added to a Basketball team
+  PASS     same player on a second Basketball team in the same trimester -> 409
+  PASS     but the same player MAY join a Cricket team
+  PASS     adding to a team that does not exist -> 404
+
+=== Engine invariant: nothing in the database is invisible to it ======
+  PASS     every stored match has comparable times (found 0 that do not)
+           match rows by status: CANCELLED=7, DRAFT=5
+
+========================================================================
+  checks run : 97
+  passed     : 97
+  findings   : 0
+========================================================================

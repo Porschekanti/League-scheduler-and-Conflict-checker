@@ -56,6 +56,10 @@ rm -f scheduler.db scheduler.db-wal scheduler.db-shm && .venv/bin/python seed.py
 # trimester seasons, blackout, and master-sheet suite (reseeds itself)
 .venv/bin/python booking_rules_test.py
 
+# edge cases: boundaries, hostile input, auth, cancellation, races
+# writes logs/edge-cases-<timestamp>.log and logs/latest.log
+.venv/bin/python edge_case_test.py
+
 # frontend: compile the TypeScript (no packages, uses Node's own stripper)
 node frontend/build.mjs            # or --watch while editing
 
@@ -98,6 +102,10 @@ seed.py            Sample users/seasons/teams/venues
 smoke_test.py      Happy-path + core-rule walkthrough
 conflict_regression_test.py  Conflict-engine regression suite
 booking_rules_test.py        Trimesters, blackout, and master-sheet suite
+edge_case_test.py            Edge cases; writes a run log under logs/
+scripts/redact_session_log.py  Strips secrets from a transcript before committing
+logs/                        Test-run logs (latest.log is always the most recent)
+Claude Code Sessions/        Redacted Claude Code transcripts
 migrate_csv.py       Legacy master-sheet CSV -> SQLite importer
 presentation_seed.py Reproducible final-day demo database generator
 docs/database_schema.md  Complete column dictionary and RLS notes
@@ -439,3 +447,24 @@ solved problems:
   the whole point is promoting somebody who holds no role yet and `revoke`
   demotes to VIEWER. Authorization there is ownership, not role.
 - No test framework — `smoke_test.py` is a linear script of `assert`s.
+  `edge_case_test.py` is the exception: it reports every finding and exits
+  non-zero at the end rather than stopping at the first one, because its job is
+  to survey the whole surface in one pass.
+
+### Committing session transcripts
+
+`Claude Code Sessions/` holds redacted transcripts. **Never commit a raw one** —
+this repository is public and a transcript records everything typed, including
+credentials pasted into the chat. Run them through:
+
+```bash
+.venv/bin/python scripts/redact_session_log.py --literals-file /path/outside/repo.txt \
+    ~/.claude/projects/<project>/<session>.jsonl \
+    "Claude Code Sessions/<Name>/<day>/session-<date>-<short-id>.jsonl"
+```
+
+Label-based matching alone is not enough. A transcript records far more than the
+original message — a later `grep -c "<the secret>"` puts the value back with no
+label in front of it, which is exactly how the first pass here re-leaked a
+password it had already redacted. That is what `--literal`/`--literals-file`
+exist for, and why the literals file itself is gitignored.

@@ -17,3 +17,7 @@ __pycache__/
 *service-account*.json
 *credentials*.json
 gen-lang-client-*.json
+
+# Secret literals handed to scripts/redact_session_log.py at runtime.
+literals.txt
+secrets.txt
